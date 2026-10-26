@@ -221,6 +221,23 @@ public class OpenVsxHostedService {
   public record Published(MavenResponse response, String path) {
   }
 
+  public MavenResponse getItem(
+      RepositoryRuntime runtime,
+      String namespace,
+      String extension,
+      OpenVsxQuery query,
+      String baseUrl,
+      String repository,
+      boolean headOnly) {
+    requireHosted(runtime);
+    List<OpenVsxExtensionView> views = views(runtime, namespace, extension);
+    OpenVsxExtensionView selected = metadata.latest(views, query.targetPlatform());
+    if (selected == null) {
+      throw notFound(namespace + "/" + extension);
+    }
+    return metadata.json(metadata.itemJson(baseUrl, repository, selected), headOnly);
+  }
+
   public MavenResponse deleteExtension(
       RepositoryRuntime runtime, String namespace, String extension, String version,
       String targetPlatform, boolean enforcePolicy) {

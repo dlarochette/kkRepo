@@ -91,7 +91,7 @@ final class OpenVsxAssetSupport {
     MavenResponse archive = hosted.getInternal(runtime, path, false);
     try (InputStream body = archive.body()) {
       if (body == null) throw new MavenExceptions.MavenNotFoundException(path);
-      try (ZipInputStream zip = new ZipInputStream(body)) {
+      try (ZipInputStream zip = new BoundedZipInputStream(body, MAX_ARCHIVE_BYTES)) {
         ZipEntry entry;
         int entries = 0;
         long totalBytes = 0;
@@ -129,7 +129,7 @@ final class OpenVsxAssetSupport {
     List<String> children = new ArrayList<>();
     try (InputStream body = archive.body()) {
       if (body == null) throw new MavenExceptions.MavenNotFoundException(path);
-      try (ZipInputStream zip = new ZipInputStream(body)) {
+      try (ZipInputStream zip = new BoundedZipInputStream(body, MAX_ARCHIVE_BYTES)) {
         ZipEntry entry;
         int entries = 0;
         long totalBytes = 0;

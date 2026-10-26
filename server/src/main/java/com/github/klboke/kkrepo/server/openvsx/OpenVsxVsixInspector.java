@@ -35,7 +35,8 @@ final class OpenVsxVsixInspector {
   }
 
   Inspected inspect(Path file, String submittedFileName) {
-    try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(file))) {
+    try (ZipInputStream zip = new BoundedZipInputStream(
+        Files.newInputStream(file), MAX_TOTAL_ENTRY_BYTES)) {
       ZipEntry selected = null;
       Map<String, byte[]> candidates = new LinkedHashMap<>();
       ZipEntry entry;

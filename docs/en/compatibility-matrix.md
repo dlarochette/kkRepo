@@ -160,9 +160,8 @@ See [Nexus Migration Guide](nexus-migration-guide.md).
 - Go hosted publication uses the Nexus-compatible repository-root `<version>.zip` PUT or the UI/Components API. There is no separate Go client publish command; callers must build a canonical module ZIP whose root, module path, version, and `go.mod` agree.
 - Open VSX support covers the registry API and a VS Code gallery compatibility projection. VSIX
   cryptographic signature verification, marketplace social/review APIs, trusted publishing,
-  publisher ownership verification, and full gallery request-body filtering are outside the
-  current scope. Target-platform variants are represented as separate component versions and fall
-  back to the universal VSIX.
+  and publisher ownership verification are outside the current scope. Target-platform variants
+  are represented as separate component versions and fall back to the universal VSIX.
 - Arch Linux support covers hosted/proxy/group pacman repositories, OpenPGP database signing with
   encrypted key import/generation, `.db.sig`/`.files.sig`, and package `.sig` serving. Uploaded
   package signatures are not verified or embedded in `%PGPSIG%`, the `.files` database currently has

@@ -99,6 +99,23 @@ final class OpenVsxMetadata {
     return body;
   }
 
+  Map<String, Object> itemJson(
+      String baseUrl, String repository, OpenVsxExtensionView view) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("itemName", view.extensionId());
+    body.put("publisher", view.namespace());
+    body.put("publisherDisplayName", view.namespace());
+    body.put("name", view.name());
+    body.put("version", view.version());
+    body.put("displayName", view.displayName() == null ? view.name() : view.displayName());
+    body.put("description", view.description());
+    body.put("lastUpdated", view.timestamp().toString());
+    body.put("downloadCount", 0);
+    String icon = files(baseUrl, repository, view).get("icon");
+    if (icon != null) body.put("icon", icon);
+    return body;
+  }
+
   Map<String, Object> versionsJson(
       String baseUrl, String repository, List<OpenVsxExtensionView> allVersions, int offset,
       int size) {

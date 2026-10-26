@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryType;
 import com.github.klboke.kkrepo.server.maven.MavenResponse;
@@ -29,7 +30,7 @@ class OpenVsxProtocolHandlerTest {
   private final OpenVsxProxyService proxy = mock(OpenVsxProxyService.class);
   private final OpenVsxGroupService group = mock(OpenVsxGroupService.class);
   private final OpenVsxProtocolHandler handler = new OpenVsxProtocolHandler(
-      hosted, proxy, group, new ForwardedHeaderPolicy(""));
+      hosted, proxy, group, new ForwardedHeaderPolicy(""), new ObjectMapper());
 
   @Test
   void delegatesMetadataReadsToTheMatchingFacet() throws Exception {
@@ -85,6 +86,58 @@ class OpenVsxProtocolHandlerTest {
     org.junit.jupiter.api.Assertions.assertThrows(
         com.github.klboke.kkrepo.server.maven.MavenExceptions.BadRequestException.class,
         () -> handler.handle(request(runtime, "GET", "api/acme%2Fdemo", null)));
+  }
+
+  @Test
+  void galleryPostBodyFiltersAreAppliedToTheQuery() throws Exception {
+    RepositoryRuntime runtime = runtime(RepositoryType.HOSTED);
+    byte[] responseBody = "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    when(hosted.get(eq(runtime), any(), any(), any(), eq("demo"), eq(false)))
+        .thenReturn(MavenResponse.ok(new ByteArrayInputStream(responseBody), responseBody.length,
+            "application/json", "etag", null));
+    byte[] body = """
+        {"filters":[{"criteria":[
+          {"filterType":10,"value":"python"},
+          {"filterType":6,"value":"acme"}
+        ],"pageNumber":3,"pageSize":7}]}
+        """.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    handler.handle(request(runtime, "POST", "vscode/gallery/extensionquery", body));
+
+    org.mockito.ArgumentCaptor<com.github.klboke.kkrepo.server.openvsx.OpenVsxQuery> query =
+        org.mockito.ArgumentCaptor.forClass(
+            com.github.klboke.kkrepo.server.openvsx.OpenVsxQuery.class);
+    verify(hosted).get(eq(runtime), any(), query.capture(), any(), eq("demo"), eq(false));
+    assertEquals("python", query.getValue().query());
+    assertEquals("acme", query.getValue().namespaceName());
+    assertEquals(7, query.getValue().size());
+    assertEquals(14, query.getValue().offset());
+  }
+
+  @Test
+  void vscodeItemResolvesTheRequestedExtension() throws Exception {
+    RepositoryRuntime runtime = runtime(RepositoryType.HOSTED);
+    byte[] body = "{\"itemName\":\"acme.demo\"}".getBytes(
+        java.nio.charset.StandardCharsets.UTF_8);
+    when(hosted.getItem(eq(runtime), eq("acme"), eq("demo"), any(), any(), eq("demo"), eq(false)))
+        .thenReturn(MavenResponse.ok(new ByteArrayInputStream(body), body.length,
+            "application/json", "etag", null));
+
+    ResponseEntity<?> response = handler.handle(itemRequest(runtime,
+        "vscode/item", "acme.demo"));
+
+    assertEquals(200, response.getStatusCode().value());
+    verify(hosted).getItem(eq(runtime), eq("acme"), eq("demo"), any(), any(), eq("demo"),
+        eq(false));
+  }
+
+  private static RepositoryProtocolRequest itemRequest(
+      RepositoryRuntime runtime, String path, String itemName) {
+    MockHttpServletRequest servlet = new MockHttpServletRequest("GET",
+        "/repository/demo/" + path);
+    servlet.addParameter("itemName", itemName);
+    return new RepositoryProtocolRequest(
+        runtime, runtime.name(), path, HttpMethod.GET, servlet, null, null);
   }
 
   private static RepositoryRuntime runtime(RepositoryType type) {

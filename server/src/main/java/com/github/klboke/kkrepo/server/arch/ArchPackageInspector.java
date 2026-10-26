@@ -33,8 +33,9 @@ final class ArchPackageInspector {
       throw new MavenExceptions.BadRequestException("Invalid pacman package filename");
     }
     try (InputStream input = Files.newInputStream(file);
-         InputStream decompressed = decompress(input, parsed.compression());
-         TarArchiveInputStream tar = new TarArchiveInputStream(decompressed)) {
+         InputStream counted = new CountingInputStream(
+             decompress(input, parsed.compression()), MAX_TOTAL_ENTRY_BYTES);
+         TarArchiveInputStream tar = new TarArchiveInputStream(counted)) {
       Map<String, List<String>> fields = null;
       TarArchiveEntry entry;
       int entries = 0;
@@ -161,6 +162,44 @@ final class ArchPackageInspector {
       return Long.parseLong(value.trim());
     } catch (NumberFormatException ignored) {
       return null;
+    }
+  }
+
+  private static final class CountingInputStream extends java.io.FilterInputStream {
+    private final long limit;
+    private long total;
+
+    private CountingInputStream(InputStream input, long limit) {
+      super(input);
+      this.limit = Math.max(1, limit);
+    }
+
+    @Override
+    public int read() throws IOException {
+      int value = super.read();
+      if (value >= 0) count(1);
+      return value;
+    }
+
+    @Override
+    public int read(byte[] buffer, int offset, int length) throws IOException {
+      int read = super.read(buffer, offset, length);
+      if (read > 0) count(read);
+      return read;
+    }
+
+    @Override
+    public long skip(long bytes) throws IOException {
+      long skipped = super.skip(bytes);
+      if (skipped > 0) count(skipped);
+      return skipped;
+    }
+
+    private void count(long bytes) throws IOException {
+      total += bytes;
+      if (total > limit) {
+        throw new IOException("Package payload is too large to inspect");
+      }
     }
   }
 

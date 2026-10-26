@@ -37,12 +37,12 @@ The route table below is derived from the Open VSX OpenAPI document at
 | `GET api/{namespace}/{extension}/{targetPlatform}/...` | Target-platform metadata/file variants |
 | `POST api/-/publish?token=...` | Hosted VSIX publication |
 | `POST api/{namespace}/{extension}/delete` | Not implemented in v1; deletion is available through `DELETE` on a concrete package/file path and the admin APIs |
-| `GET`/`POST vscode/gallery/extensionquery` | Minimal gallery query shape; only URL query parameters are interpreted, the POST body filter shape is not implemented yet |
+| `GET`/`POST vscode/gallery/extensionquery` | Gallery query shape; URL parameters and the POST body criteria/page fields are interpreted |
 | `GET vscode/gallery/{namespace}/{extension}/latest` | Latest metadata |
 | `GET vscode/gallery/publishers/{namespace}/vsextensions/{extension}/{version}/vspackage` | VSIX download |
 | `GET vscode/asset/{namespace}/{extension}/{version}/{assetType}/**` | Maps marketplace asset types to package members |
 | `GET vscode/unpkg/{namespace}/{extension}/{version}/**` | Member extraction or directory listing |
-| `GET vscode/item?itemName=...` | Parsed route; v1 currently returns 404 because the marketplace item projection is not implemented |
+| `GET`/`POST vscode/item?itemName=...` | Item projection for the requested `publisher.extension` |
 
 ## Path parsing
 
@@ -135,7 +135,7 @@ The VSIX coordinate is immutable. Re-publishing the same version/target platform
 1. Validate against a real `ovsx` client and a VS Code/Code OSS instance in compat-test.
 2. Implement `POST api/{namespace}/{extension}/delete` and version deactivation semantics.
 3. Add target-platform-specific identity tests and a safer component version-key model.
-4. Implement the full VS Code gallery request-body filter shape and response metadata.
+4. Extend the gallery response metadata for marketplace clients that require additional fields.
 5. Add publisher/namespace ownership and trusted-publishing policy if the product needs it.
 6. Add protocol-aware Nexus migration only if a source holds Open VSX-shaped content; Nexus has no
    native Open VSX format.

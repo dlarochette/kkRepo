@@ -2,6 +2,7 @@ package com.github.klboke.kkrepo.server.openvsx;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.klboke.kkrepo.cache.SharedCache;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.persistence.jdbc.api.ComponentDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.PersistenceHashes;
@@ -35,18 +36,23 @@ public class OpenVsxProxyService {
   private final ComponentDao components;
   private final OpenVsxMetadata metadata;
   private final ObjectMapper objectMapper;
+  private final SharedCache sharedCache;
   private final long maxExtensionSize;
+  private static final String REFRESH_ALL_NAMESPACE = "openvsx-refresh-all";
+  private static final java.time.Duration REFRESH_ALL_TTL = java.time.Duration.ofSeconds(30);
 
   public OpenVsxProxyService(
       RawProxyService proxy,
       ComponentDao components,
       OpenVsxMetadata metadata,
       ObjectMapper objectMapper,
+      SharedCache sharedCache,
       @Value("${kkrepo.openvsx.max-extension-size:268435456}") long maxExtensionSize) {
     this.proxy = proxy;
     this.components = components;
     this.metadata = metadata;
     this.objectMapper = objectMapper;
+    this.sharedCache = sharedCache;
     this.maxExtensionSize = Math.max(1, maxExtensionSize);
   }
 
@@ -148,6 +154,14 @@ public class OpenVsxProxyService {
   }
 
   private List<OpenVsxExtensionView> refreshAll(RepositoryRuntime runtime) {
+    String cacheKey = Long.toString(runtime.id());
+    try {
+      if (sharedCache.getString(REFRESH_ALL_NAMESPACE, cacheKey).isPresent()) {
+        return views(runtime);
+      }
+    } catch (RuntimeException ignored) {
+      // A cache outage must only cost performance, not correctness.
+    }
     Set<String> seen = new HashSet<>();
     for (ComponentRecord component : components.listByRepositoryId(runtime.id())) {
       if (component.format() != RepositoryFormat.OPENVSX
@@ -162,6 +176,11 @@ public class OpenVsxProxyService {
         // One broken upstream extension must not hide the other already-known extensions.
       }
     }
+    try {
+      sharedCache.putString(REFRESH_ALL_NAMESPACE, cacheKey, "1", REFRESH_ALL_TTL);
+    } catch (RuntimeException ignored) {
+      // Performance hint only.
+    }
     return views(runtime);
   }
 
@@ -172,6 +191,23 @@ public class OpenVsxProxyService {
 
   List<OpenVsxExtensionView> allViews(RepositoryRuntime runtime) {
     return refreshAll(runtime);
+  }
+
+  public MavenResponse getItem(
+      RepositoryRuntime runtime,
+      String namespace,
+      String extension,
+      OpenVsxQuery query,
+      String baseUrl,
+      String repository,
+      boolean headOnly) {
+    requireProxy(runtime);
+    List<OpenVsxExtensionView> views = refresh(runtime, namespace, extension);
+    OpenVsxExtensionView selected = metadata.latest(views, query.targetPlatform());
+    if (selected == null) {
+      throw notFound(namespace + "/" + extension);
+    }
+    return metadata.json(metadata.itemJson(baseUrl, repository, selected), headOnly);
   }
 
   private List<OpenVsxExtensionView> refresh(

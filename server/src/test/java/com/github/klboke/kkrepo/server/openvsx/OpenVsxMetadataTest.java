@@ -36,6 +36,16 @@ class OpenVsxMetadataTest {
   }
 
   @Test
+  void buildsItemProjection() {
+    OpenVsxExtensionView view = view("1.2.3", null);
+    Map<String, Object> json = metadata.itemJson("https://repo.test", "openvsx-hosted", view);
+
+    assertEquals("acme.demo", json.get("itemName"));
+    assertEquals("acme", json.get("publisher"));
+    assertEquals("1.2.3", json.get("version"));
+  }
+
+  @Test
   void selectsLatestStableAndPlatformFallback() {
     OpenVsxExtensionView universal = view("1.0.0", null);
     OpenVsxExtensionView prerelease = view("2.0.0-rc.1", null);

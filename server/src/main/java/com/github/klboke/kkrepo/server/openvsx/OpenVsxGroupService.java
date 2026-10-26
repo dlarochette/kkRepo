@@ -108,6 +108,24 @@ public class OpenVsxGroupService {
     };
   }
 
+  public MavenResponse getItem(
+      RepositoryRuntime runtime,
+      String namespace,
+      String extension,
+      OpenVsxQuery query,
+      String baseUrl,
+      String repository,
+      boolean headOnly) {
+    requireGroup(runtime);
+    List<OpenVsxExtensionView> views = viewsForGroup(
+        runtime, namespace, extension, new HashSet<>());
+    OpenVsxExtensionView selected = metadata.latest(views, query.targetPlatform());
+    if (selected == null) {
+      throw notFound(namespace + "/" + extension);
+    }
+    return metadata.json(metadata.itemJson(baseUrl, repository, selected), headOnly);
+  }
+
   private MavenResponse routeFile(
       RepositoryRuntime group,
       OpenVsxPath path,

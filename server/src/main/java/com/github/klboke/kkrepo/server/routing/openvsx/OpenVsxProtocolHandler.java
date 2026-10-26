@@ -1,6 +1,7 @@
 package com.github.klboke.kkrepo.server.routing.openvsx;
 
 import com.github.klboke.kkrepo.core.RepositoryFormat;
+import com.github.klboke.kkrepo.protocol.openvsx.OpenVsxCoordinates;
 import com.github.klboke.kkrepo.protocol.openvsx.OpenVsxPath;
 import com.github.klboke.kkrepo.protocol.openvsx.OpenVsxPathParser;
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
@@ -10,6 +11,7 @@ import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.openvsx.OpenVsxGroupService;
 import com.github.klboke.kkrepo.server.openvsx.OpenVsxHostedService;
 import com.github.klboke.kkrepo.server.openvsx.OpenVsxProxyService;
+import com.github.klboke.kkrepo.server.openvsx.OpenVsxQuery;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolHandler;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
@@ -46,16 +48,20 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
   private final OpenVsxProxyService proxy;
   private final OpenVsxGroupService group;
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
+  private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+  private static final int MAX_GALLERY_BODY_BYTES = 1024 * 1024;
 
   public OpenVsxProtocolHandler(
       OpenVsxHostedService hosted,
       OpenVsxProxyService proxy,
       OpenVsxGroupService group,
-      ForwardedHeaderPolicy forwardedHeaderPolicy) {
+      ForwardedHeaderPolicy forwardedHeaderPolicy,
+      com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
     this.hosted = hosted;
     this.proxy = proxy;
     this.group = group;
     this.forwardedHeaderPolicy = forwardedHeaderPolicy;
+    this.objectMapper = objectMapper;
   }
 
   @Override
@@ -69,9 +75,18 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
     String baseUrl = serverBaseUrl(request) + request.getContextPath()
         + RepositoryUrlPrefix.path(request);
     String repository = context.runtime().name();
-    var query = com.github.klboke.kkrepo.server.openvsx.OpenVsxQuery.from(request);
+    OpenVsxQuery query = OpenVsxQuery.from(request);
     try {
       OpenVsxPath path = parser.parse(context.path());
+      if (context.method() == HttpMethod.POST
+          && (path.kind() == OpenVsxPath.Kind.VSCODE_QUERY
+              || path.kind() == OpenVsxPath.Kind.VSCODE_ITEM)) {
+        byte[] body = request.getInputStream().readNBytes(MAX_GALLERY_BODY_BYTES + 1);
+        if (body.length > MAX_GALLERY_BODY_BYTES) {
+          throw new MavenExceptions.BadRequestException("VS Code gallery query is too large");
+        }
+        query = query.withVscodeBody(body, objectMapper);
+      }
       if (context.method() == HttpMethod.POST && path.kind() == OpenVsxPath.Kind.PUBLISH) {
         if (context.runtime().type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
           throw new MavenExceptions.MavenNotFoundException(path.rawPath());
@@ -99,6 +114,32 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
       if (context.method() == HttpMethod.PUT) {
         throw new MavenExceptions.MethodNotAllowed(
             "Use POST api/-/publish to publish an Open VSX extension");
+      }
+      if (path.kind() == OpenVsxPath.Kind.VSCODE_ITEM) {
+        String itemName = request.getParameter("itemName");
+        if (itemName == null || itemName.isBlank()) {
+          throw new MavenExceptions.BadRequestException("itemName query parameter is required");
+        }
+        int separator = itemName.indexOf('.');
+        if (separator <= 0 || separator >= itemName.length() - 1) {
+          throw new MavenExceptions.BadRequestException("Invalid itemName");
+        }
+        String namespace = itemName.substring(0, separator);
+        String extension = itemName.substring(separator + 1);
+        if (!OpenVsxCoordinates.validName(namespace)
+            || !OpenVsxCoordinates.validName(extension)) {
+          throw new MavenExceptions.BadRequestException("Invalid itemName");
+        }
+        boolean itemHeadOnly = context.method() == HttpMethod.HEAD;
+        MavenResponse item = switch (context.runtime().type()) {
+          case HOSTED -> hosted.getItem(context.runtime(), namespace, extension, query, baseUrl,
+              repository, itemHeadOnly);
+          case PROXY -> proxy.getItem(context.runtime(), namespace, extension, query, baseUrl,
+              repository, itemHeadOnly);
+          case GROUP -> group.getItem(context.runtime(), namespace, extension, query, baseUrl,
+              repository, itemHeadOnly);
+        };
+        return response(item, request);
       }
       boolean headOnly = context.method() == HttpMethod.HEAD;
       MavenResponse response = switch (context.runtime().type()) {
