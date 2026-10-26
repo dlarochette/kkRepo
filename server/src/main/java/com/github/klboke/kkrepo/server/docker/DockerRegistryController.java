@@ -104,7 +104,8 @@ public class DockerRegistryController {
       }
       case BLOB -> stream(dispatchBlob(runtime, target.path(), false), request, true);
       case UPLOAD_SESSION -> uploadStatus(request, runtime, target, target.path());
-      case TAGS -> tagsJson(request, dispatchTags(runtime, target.path(), last, limit), limit);
+      case TAGS -> tagsJson(
+          request, dispatchTags(request, runtime, target.path(), last, limit), limit);
       case CATALOG -> catalogJson(request, dispatchCatalog(runtime, last, limit), limit);
       case REFERRERS -> referrersJson(dispatchReferrers(runtime, target.path(), artifactType), artifactType);
       default -> throw new DockerProtocolException(
@@ -284,12 +285,31 @@ public class DockerRegistryController {
     };
   }
 
-  private DockerTagList dispatchTags(RepositoryRuntime runtime, DockerPath path, String last, int limit) {
-    return switch (runtime.type()) {
+  private DockerTagList dispatchTags(
+      HttpServletRequest request,
+      RepositoryRuntime runtime,
+      DockerPath path,
+      String last,
+      int limit) {
+    DockerTagList live = switch (runtime.type()) {
       case HOSTED -> hosted.tags(runtime, path.imageName(), last, limit);
       case PROXY -> proxy.tags(runtime, path.imageName(), last, limit);
       case GROUP -> group.tags(runtime, path.imageName(), last, limit);
     };
+    if (staging == null || !staged(request)) {
+      return live;
+    }
+    java.util.TreeSet<String> merged = new java.util.TreeSet<>(live.tags());
+    merged.addAll(staging.stagedDockerTags(
+        runtime, stagingSession(request), path.imageName(), subject(request)));
+    int bounded = Math.max(1, limit);
+    List<String> page = merged.stream()
+        .filter(tag -> last == null || last.isBlank() || tag.compareTo(last) > 0)
+        .limit(bounded + 1L)
+        .toList();
+    boolean hasNext = page.size() > bounded;
+    return new DockerTagList(
+        path.imageName(), page.stream().limit(bounded).toList(), hasNext);
   }
 
   private DockerCatalogList dispatchCatalog(RepositoryRuntime runtime, String last, int limit) {

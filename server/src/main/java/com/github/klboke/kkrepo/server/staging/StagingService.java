@@ -701,6 +701,29 @@ public class StagingService {
     return adapter != null && adapter.supportsPublication(rawPath);
   }
 
+  /** Returns staged Docker tags for one image in the session view. */
+  @Transactional(readOnly = true)
+  public List<String> stagedDockerTags(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String imageName,
+      PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireSessionReadable(session, runtime, actor);
+    String prefix = "manifest/" + imageName + "/";
+    return staging.listItems(session.id()).stream()
+        .filter(item -> item.repositoryId() == runtime.id())
+        .filter(item -> item.format() == RepositoryFormat.DOCKER)
+        .filter(item -> !item.action().equals(StagingDao.ITEM_DELETE))
+        .map(StagingItemRecord::logicalPath)
+        .filter(path -> path.startsWith(prefix))
+        .map(path -> path.substring(prefix.length()))
+        .filter(tag -> !tag.isBlank() && !tag.contains("/"))
+        .distinct()
+        .sorted()
+        .toList();
+  }
+
   @Transactional(readOnly = true)
   public Optional<MavenResponse> getStagedContent(
       RepositoryRuntime runtime,
