@@ -424,6 +424,176 @@ public class StagingService {
         Instant.now());
   }
 
+  /**
+   * Creates a new OPEN session containing the inverse of a successful promotion. Content blobs
+   * still present in the blob store are retained for the new session.
+   */
+  @Transactional
+  public StagingSessionView compensate(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord original = findSession(sessionId);
+    requireOwnerOrAdmin(original, actor);
+    if (!original.state().equals(StagingDao.SESSION_PROMOTED)) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Only a successfully promoted session can be compensated");
+    }
+    StagingPromotionRecord promotion = original.promotionId() == null
+        ? staging.findLatestPromotion(original.id()).orElse(null)
+        : staging.findPromotion(original.promotionId()).orElse(null);
+    if (promotion == null || !promotion.state().equals(StagingDao.PROMOTION_SUCCEEDED)) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "No successful promotion report to compensate");
+    }
+    Object rawItems = promotion.report() == null ? null : promotion.report().get("items");
+    List<Map<String, Object>> rows = mapRows(rawItems);
+    if (rows.isEmpty()) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Promotion report has no items");
+    }
+    Instant now = Instant.now();
+    String name = original.name() + "-compensate-" + now.toEpochMilli();
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    attributes.put("compensates", original.id());
+    attributes.put("compensatesName", original.name());
+    long newSessionId = staging.insertSession(new StagingSessionRecord(
+        null, name, StagingDao.SESSION_OPEN, 0, actorSource(actor), actorUserId(actor),
+        now, now, null, null, now.plus(7, ChronoUnit.DAYS), null, attributes));
+    for (StagingRepositoryRecord repository : staging.listRepositories(original.id())) {
+      staging.addRepository(newSessionId, repository.repositoryId(), repository.format().id());
+    }
+    for (Map<String, Object> row : rows) {
+      if (row.get("groupRepositoryId") != null) {
+        inverseGroupChange(newSessionId, row);
+      } else {
+        inverseItem(newSessionId, original, row, actor);
+      }
+    }
+    StagingSessionRecord created = staging.findSessionById(newSessionId).orElseThrow();
+    audit(actor, remoteAddr, "staging-compensate", original,
+        "created", Map.of("compensationSessionId", newSessionId));
+    return view(created);
+  }
+
+  private void inverseItem(
+      long newSessionId,
+      StagingSessionRecord original,
+      Map<String, Object> row,
+      PermissionSubject actor) {
+    String result = stringValue(row.get("result"));
+    if (result.equals("unchanged") || result.equals("retained")
+        || result.equals("already-absent")) {
+      return;
+    }
+    long repositoryId = longValue(row.get("repositoryId"), -1L);
+    String path = stringValue(row.get("path"));
+    String action = stringValue(row.get("action"));
+    RepositoryRecord repository = repositories.findById(repositoryId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.CONFLICT, "Compensation repository no longer exists"));
+    String inverse = switch (action) {
+      case StagingDao.ITEM_ADD -> StagingDao.ITEM_DELETE;
+      case StagingDao.ITEM_DELETE -> StagingDao.ITEM_ADD;
+      case StagingDao.ITEM_REPLACE -> StagingDao.ITEM_REPLACE;
+      default -> throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Unsupported compensation action " + action);
+    };
+    AssetBlobRecord previous = previousBlob(row);
+    if (!inverse.equals(StagingDao.ITEM_DELETE) && previous == null) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Previous blob is unavailable for " + path);
+    }
+    Map<String, Object> attributes = mapValue(row.get("stagedAttributes"));
+    StagingItemRecord item = new StagingItemRecord(
+        null,
+        newSessionId,
+        repositoryId,
+        repository.format(),
+        path,
+        PersistenceHashes.pathHash(path),
+        inverse,
+        StagingDao.ITEM_STAGED,
+        previous == null ? null : previous.blobStoreId(),
+        previous == null ? null : previous.id(),
+        previous == null ? null : previous.contentType(),
+        previous == null ? null : previous.size(),
+        previous == null ? null : previous.sha256(),
+        previous == null ? null : previous.md5(),
+        previous == null ? null : previous.sha1(),
+        path,
+        null,
+        null,
+        attributes,
+        Instant.now(),
+        Instant.now());
+    long itemId = staging.tryInsertItem(item)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.CONFLICT, "Compensation item already exists for " + path));
+    if (previous != null && !blobReferences.retain(BLOB_OWNER_TYPE, itemId, previous.id())) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Previous blob is no longer available for " + path);
+    }
+  }
+
+  private void inverseGroupChange(long newSessionId, Map<String, Object> row) {
+    String result = stringValue(row.get("result"));
+    if (result.equals("unchanged")) return;
+    String action = stringValue(row.get("action"));
+    String inverse = action.equals(StagingDao.GROUP_ADD)
+        ? StagingDao.GROUP_REMOVE : StagingDao.GROUP_ADD;
+    staging.upsertGroupChange(new StagingGroupChangeRecord(
+        null,
+        newSessionId,
+        longValue(row.get("groupRepositoryId"), -1L),
+        longValue(row.get("memberRepositoryId"), -1L),
+        inverse,
+        null,
+        StagingDao.GROUP_STAGED,
+        Instant.now(),
+        Instant.now()));
+  }
+
+  private AssetBlobRecord previousBlob(Map<String, Object> row) {
+    long blobId = longValue(row.get("previousAssetBlobId"), -1L);
+    if (blobId > 0) {
+      Optional<AssetBlobRecord> blob = assets.findBlobById(blobId);
+      if (blob.isPresent()) return blob.get();
+    }
+    String sha256 = stringValue(row.get("previousSha256"));
+    long size = longValue(row.get("previousSize"), -1L);
+    long blobStoreId = longValue(row.get("previousBlobStoreId"), -1L);
+    if (!sha256.isBlank() && size >= 0 && blobStoreId > 0) {
+      return assets.recoverDeletedBlobBySha256(blobStoreId, sha256, size).orElse(null);
+    }
+    return null;
+  }
+
+  private static List<Map<String, Object>> mapRows(Object value) {
+    if (!(value instanceof List<?> list)) return List.of();
+    return list.stream()
+        .filter(Map.class::isInstance)
+        .map(StagingService::mapValue)
+        .toList();
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> mapValue(Object value) {
+    return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+  }
+
+  private static String stringValue(Object value) {
+    return value == null ? "" : String.valueOf(value);
+  }
+
+  private static long longValue(Object value, long fallback) {
+    if (value instanceof Number number) return number.longValue();
+    if (value == null) return fallback;
+    try {
+      return Long.parseLong(String.valueOf(value));
+    } catch (NumberFormatException error) {
+      return fallback;
+    }
+
+  }
+
   @Transactional(readOnly = true)
   public List<StagingItemView> items(long sessionId, PermissionSubject actor) {
     StagingSessionRecord session = findSession(sessionId);
@@ -741,15 +911,28 @@ public class StagingService {
             .thenComparing(StagingItemRecord::logicalPath))
         .toList()) {
       RepositoryRuntime runtime = runtimeById.get(item.repositoryId());
+      Optional<AssetRecord> previous = assets.findAssetByPath(
+          item.repositoryId(), item.logicalPath());
+      AssetBlobRecord previousBlob = previous.isEmpty() || previous.get().assetBlobId() == null
+          ? null : assets.findBlobById(previous.get().assetBlobId()).orElse(null);
       String result = applyItem(runtime, item, actor);
       blobReferences.releaseOwner(BLOB_OWNER_TYPE, item.id());
       staging.updateItemStatus(item.id(), StagingDao.ITEM_PROMOTED);
       Map<String, Object> row = new LinkedHashMap<>();
+      row.put("repositoryId", item.repositoryId());
       row.put("repository", runtime.name());
       row.put("path", item.logicalPath());
       row.put("action", item.action());
       row.put("result", result);
       row.put("sha256", item.sha256());
+      row.put("stagedAttributes", item.attributes());
+      if (previousBlob != null) {
+        row.put("previousAssetBlobId", previousBlob.id());
+        row.put("previousBlobStoreId", previousBlob.blobStoreId());
+        row.put("previousSha256", previousBlob.sha256());
+        row.put("previousSize", previousBlob.size());
+        row.put("previousContentType", previousBlob.contentType());
+      }
       results.add(row);
     }
     for (StagingGroupChangeRecord change : groups.stream()

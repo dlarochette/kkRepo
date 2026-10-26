@@ -162,6 +162,12 @@ public class StagingController {
     return staging.approve(id, subject(servlet), ClientAddress.from(servlet));
   }
 
+  @PostMapping("/sessions/{id}/compensate")
+  public StagingService.StagingSessionView compensate(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    return staging.compensate(id, subject(servlet), ClientAddress.from(servlet));
+  }
+
   @PostMapping("/sessions/{id}/preflight")
   public StagingService.StagingReport preflight(
       @PathVariable("id") long id, HttpServletRequest servlet) {
