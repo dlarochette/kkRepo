@@ -4,6 +4,7 @@ import com.github.klboke.kkrepo.auth.PermissionSubject;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -19,7 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 /** Internal API for multi-repository staging sessions. */
 @RestController
-@RequestMapping("/internal/staging")
+@RequestMapping({"/internal/staging", "/service/rest/v1/staging"})
 public class StagingController {
   private final StagingService staging;
 
@@ -29,8 +30,15 @@ public class StagingController {
 
   @PostMapping("/sessions")
   public StagingService.StagingSessionView create(
-      @RequestBody StagingService.CreateSessionRequest request, HttpServletRequest servlet) {
-    return staging.create(request, subject(servlet), ClientAddress.from(servlet));
+      @RequestBody StagingService.CreateSessionRequest request,
+      HttpServletRequest servlet,
+      HttpServletResponse response) {
+    StagingService.CreateResult result = staging.createWithCredential(
+        request, subject(servlet), ClientAddress.from(servlet));
+    if (result.token() != null && !result.token().isBlank()) {
+      response.setHeader(StagingService.TOKEN_HEADER, result.token());
+    }
+    return result.session();
   }
 
   @GetMapping("/sessions")
@@ -59,6 +67,25 @@ public class StagingController {
   public StagingService.StagingSessionView close(
       @PathVariable("id") long id, HttpServletRequest servlet) {
     return staging.close(id, subject(servlet), ClientAddress.from(servlet));
+  }
+
+  @PostMapping("/sessions/{id}/credential")
+  public StagingCredentialService.IssuedCredential rotateCredential(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    return staging.rotateCredential(
+        id, subject(servlet), ClientAddress.from(servlet));
+  }
+
+  @PostMapping("/sessions/{id}/commit")
+  public StagingService.StagingReport commit(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    return staging.commit(id, subject(servlet), ClientAddress.from(servlet));
+  }
+
+  @PostMapping("/sessions/{id}/rollback")
+  public StagingService.StagingSessionView rollback(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    return staging.rollback(id, subject(servlet), ClientAddress.from(servlet));
   }
 
   @PostMapping("/sessions/{id}/cancel")

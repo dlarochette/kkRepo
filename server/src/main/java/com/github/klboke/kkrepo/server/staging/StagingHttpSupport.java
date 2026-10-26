@@ -36,6 +36,13 @@ public class StagingHttpSupport {
       RepositoryRuntime runtime, String path, HttpServletRequest request) throws IOException {
     String header = request.getHeader(StagingService.HEADER);
     if (header == null || header.isBlank()) {
+      header = request.getParameter("stagingSession");
+    }
+    if (header == null || header.isBlank()) {
+      Object bound = request.getAttribute(StagingCredentialService.SESSION_ATTRIBUTE);
+      header = bound == null ? null : bound.toString();
+    }
+    if (header == null || header.isBlank()) {
       return Optional.empty();
     }
     String sessionKey = header.trim();

@@ -68,6 +68,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class StagingService {
   public static final String HEADER = "X-KkRepo-Staging";
+  public static final String TOKEN_HEADER = "X-KkRepo-Staging-Token";
   public static final String BLOB_OWNER_TYPE = "staging_item";
   private static final Pattern SESSION_NAME =
       Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$");
@@ -91,6 +92,7 @@ public class StagingService {
   private final TransactionTemplate transaction;
   private final Map<RepositoryFormat, StagingContentAdapter> contentAdapters;
   private final int maxItems;
+  private StagingCredentialService credentials;
 
   public StagingService(
       StagingDao staging,
@@ -123,12 +125,28 @@ public class StagingService {
     this.maxItems = Math.max(1, maxItems);
   }
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setStagingCredentialService(StagingCredentialService credentials) {
+    this.credentials = credentials;
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Session lifecycle
   // ---------------------------------------------------------------------------------------------
 
   @Transactional
   public StagingSessionView create(
+      CreateSessionRequest request, PermissionSubject actor, String remoteAddr) {
+    return createInternal(request, actor, remoteAddr).session();
+  }
+
+  @Transactional
+  public CreateResult createWithCredential(
+      CreateSessionRequest request, PermissionSubject actor, String remoteAddr) {
+    return createInternal(request, actor, remoteAddr);
+  }
+
+  private CreateResult createInternal(
       CreateSessionRequest request, PermissionSubject actor, String remoteAddr) {
     String name = request == null ? null : request.name();
     if (name == null || !SESSION_NAME.matcher(name.trim()).matches()) {
@@ -172,9 +190,56 @@ public class StagingService {
       staging.addRepository(id, target.id(), target.format().id());
     }
     StagingSessionRecord session = staging.findSessionById(id).orElseThrow();
+    StagingCredentialService.IssuedCredential issued = null;
+    if (credentials != null) {
+      issued = credentials.issue(session, actor);
+      if (!staging.updateSessionMetadata(
+          session.id(), session.revision(), session.expiresAt(),
+          credentials.withToken(session, issued))) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
+      }
+      session = staging.findSessionById(session.id()).orElseThrow();
+    }
     audit(actor, remoteAddr, "staging-create", session,
         "created", Map.of("repositories", repositoryNames));
-    return view(session);
+    return new CreateResult(view(session), issued == null ? null : issued.token());
+  }
+
+  @Transactional
+  public StagingCredentialService.IssuedCredential rotateCredential(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord session = lockOwnedSession(sessionId, actor);
+    requireState(session, Set.of(StagingDao.SESSION_OPEN),
+        "Staging credentials can only be rotated while the session is OPEN");
+    requireNotExpired(session);
+    if (credentials == null) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "Staging credentials are unavailable");
+    }
+    credentials.revoke(session);
+    StagingCredentialService.IssuedCredential issued = credentials.issue(session, actor);
+    if (!staging.updateSessionMetadata(
+        session.id(), session.revision(), session.expiresAt(),
+        credentials.withToken(session, issued))) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
+    }
+    audit(actor, remoteAddr, "staging-credential", session, "rotated", Map.of());
+    return issued;
+  }
+
+  @Transactional
+  public StagingReport commit(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    preflight(sessionId, actor, remoteAddr);
+    return promote(sessionId, actor, remoteAddr);
+  }
+
+  @Transactional
+  public StagingSessionView rollback(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    return cancel(sessionId, actor, remoteAddr);
   }
 
   @Transactional
@@ -249,6 +314,7 @@ public class StagingService {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
     }
+    if (credentials != null) credentials.revoke(session);
     audit(actor, remoteAddr, "staging-close", session, "frozen", Map.of());
     return view(staging.findSessionById(session.id()).orElseThrow());
   }
@@ -275,6 +341,7 @@ public class StagingService {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
     }
+    if (credentials != null) credentials.revoke(session);
     audit(actor, remoteAddr, "staging-cancel", session, "cancelled", Map.of());
     return view(staging.findSessionById(session.id()).orElseThrow());
   }
@@ -300,6 +367,53 @@ public class StagingService {
     StagingSessionRecord session = findSession(sessionId);
     requireOwnerOrAdmin(session, actor);
     return staging.listItems(session.id()).stream().map(StagingItemView::of).toList();
+  }
+
+  @Transactional(readOnly = true)
+  public StagingSessionView getByKey(String sessionKey, PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireOwnerOrAdmin(session, actor);
+    return view(session);
+  }
+
+  @Transactional(readOnly = true)
+  public List<StagingItemView> itemsByKey(String sessionKey, PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireOwnerOrAdmin(session, actor);
+    requireNotExpired(session);
+    return staging.listItems(session.id()).stream().map(StagingItemView::of).toList();
+  }
+
+  @Transactional(readOnly = true)
+  public Optional<StagingItemView> itemByKey(
+      String sessionKey, long itemId, PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireOwnerOrAdmin(session, actor);
+    requireNotExpired(session);
+    return staging.listItems(session.id()).stream()
+        .filter(item -> item.id() == itemId)
+        .findFirst()
+        .map(StagingItemView::of);
+  }
+
+  @Transactional
+  public int deleteItemByKey(
+      String sessionKey, long itemId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, true);
+    requireOwnerOrAdmin(session, actor);
+    requireState(session, WRITABLE, "Staging session is not OPEN");
+    requireNotExpired(session);
+    StagingItemRecord item = staging.lockItem(itemId)
+        .filter(candidate -> candidate.sessionId() == session.id())
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Staged item not found"));
+    releaseItemBlob(item);
+    staging.deleteItem(item.id());
+    audit(actor, remoteAddr, "staging-delete", session,
+        "unstaged", Map.of(
+            "repositoryId", item.repositoryId(),
+            "path", item.logicalPath()));
+    return 1;
   }
 
   @Transactional(readOnly = true)
@@ -351,7 +465,11 @@ public class StagingService {
       return transaction.execute(status -> {
         PromotionAttempt started = beginPromotion(sessionId, actor, remoteAddr);
         attempt.set(started);
-        return applyPromotion(started, actor, remoteAddr);
+        StagingReport report = applyPromotion(started, actor, remoteAddr);
+        if (credentials != null) {
+          staging.findSessionById(sessionId).ifPresent(credentials::revoke);
+        }
+        return report;
       });
     } catch (RuntimeException error) {
       recordPromotionFailure(attempt.get(), error, actor, remoteAddr);
@@ -1452,6 +1570,9 @@ public class StagingService {
 
   public record StagingWriteResult(
       long sessionId, long itemId, String action, String sha256, long size) {
+  }
+
+  public record CreateResult(StagingSessionView session, String token) {
   }
 
   private record ItemValidation(StagingItemRecord item, String status, String message) {
