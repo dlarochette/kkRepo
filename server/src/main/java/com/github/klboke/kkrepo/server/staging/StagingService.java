@@ -877,6 +877,34 @@ public class StagingService {
     return new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
   }
 
+  /**
+   * Retains a completed Docker blob for the session. Promotion only releases this staging
+   * ownership; the manifest publication makes the blob reachable.
+   */
+  @Transactional
+  public StagingWriteResult stageDockerBlob(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String digest,
+      long blobId,
+      PermissionSubject actor,
+      String remoteAddr) {
+    StagingSessionRecord session = lockSessionByKey(sessionKey);
+    requireSessionWritable(session, runtime, actor);
+    if (adapterFor(RepositoryFormat.DOCKER) == null) {
+      throw new MavenExceptions.MethodNotAllowed("Docker staging adapter is not installed");
+    }
+    AssetBlobRecord blob = assets.findBlobById(blobId)
+        .orElseThrow(() -> new MavenExceptions.MavenNotFoundException(
+            "Docker blob not found: " + blobId));
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    attributes.put("dockerBlob", true);
+    attributes.put("dockerDigest", digest);
+    StagingContentAdapter.StagedUpload upload = new StagingContentAdapter.StagedUpload(
+        blob, "blob/" + digest, "application/octet-stream", attributes);
+    return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
   private StagingWriteResult persistStagedUpload(
       StagingSessionRecord session,
       RepositoryRuntime runtime,

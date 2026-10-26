@@ -35,6 +35,7 @@ class DockerStagingContentAdapterTest {
   void normalizesOnlyManifestPaths() {
     assertTrue(adapter.normalizePath(path).isPresent());
     assertTrue(adapter.normalizePath("blobs/sha256:abc").isEmpty());
+    assertTrue(adapter.normalizePath("blob/sha256:abc").isPresent());
     assertTrue(adapter.normalizePath("manifest/library").isEmpty());
   }
 
@@ -73,6 +74,17 @@ class DockerStagingContentAdapterTest {
         eq(runtime), eq("library/alpine"), eq("latest"), any(),
         eq("application/vnd.oci.image.manifest.v1+json"), eq(List.of("latest")),
         eq("alice"), eq("127.0.0.1"));
+  }
+
+  @Test
+  void blobRetentionItemsDoNotPublishLiveRows() {
+    StagingItemRecord item = new StagingItemRecord(
+        1L, 1L, 1L, RepositoryFormat.DOCKER, "blob/sha256:abc", new byte[32], "ADD", "STAGED",
+        1L, 1L, "application/octet-stream", 1L, "2".repeat(64), "3".repeat(32),
+        "1".repeat(40), null, null, null, Map.of("dockerBlob", true), Instant.now(), Instant.now());
+    assertEquals("retained", adapter.promote(
+        runtime, item, () -> new ByteArrayInputStream(new byte[] {1}), "alice", "127.0.0.1")
+        .orElseThrow());
   }
 
   private static AssetBlobRecord blob() {

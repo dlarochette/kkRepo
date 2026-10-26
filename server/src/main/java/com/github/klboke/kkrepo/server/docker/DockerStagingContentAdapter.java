@@ -32,6 +32,7 @@ import org.springframework.stereotype.Component;
 @Component
 final class DockerStagingContentAdapter implements StagingContentAdapter {
   private static final String MANIFEST_PREFIX = "manifest/";
+  private static final String BLOB_PREFIX = "blob/";
 
   private final RawHostedService hosted;
   private final DockerHostedService dockerHosted;
@@ -50,6 +51,9 @@ final class DockerStagingContentAdapter implements StagingContentAdapter {
   public Optional<String> normalizePath(String rawPath) {
     String path = rawPath == null ? "" : rawPath.trim();
     while (path.startsWith("/")) path = path.substring(1);
+    if (path.startsWith(BLOB_PREFIX)) {
+      return path.length() > BLOB_PREFIX.length() ? Optional.of(path) : Optional.empty();
+    }
     if (!path.startsWith(MANIFEST_PREFIX)) return Optional.empty();
     String rest = path.substring(MANIFEST_PREFIX.length());
     int slash = rest.lastIndexOf('/');
@@ -107,6 +111,9 @@ final class DockerStagingContentAdapter implements StagingContentAdapter {
 
   @Override
   public boolean delete(RepositoryRuntime runtime, String path) {
+    if (path != null && path.startsWith(BLOB_PREFIX)) {
+      return false;
+    }
     ManifestCoordinate coordinate = coordinate(path);
     return dockerHosted.deleteManifest(
         runtime, coordinate.imageName(), coordinate.reference()).status() != 404;
@@ -119,6 +126,9 @@ final class DockerStagingContentAdapter implements StagingContentAdapter {
       StagingBlobSource source,
       String actor,
       String ip) {
+    if (item.logicalPath() != null && item.logicalPath().startsWith(BLOB_PREFIX)) {
+      return Optional.of("retained");
+    }
     ManifestCoordinate coordinate = coordinate(item.logicalPath());
     List<String> tags = tags(item.attributes());
     try (InputStream body = source.open()) {

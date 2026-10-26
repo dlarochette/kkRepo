@@ -215,6 +215,11 @@ public class DockerRegistryController {
           parseUploadDigest(digest),
           userId(request),
           ClientAddress.from(request));
+      if (staging != null && staged(request) && result.blobId() != null) {
+        staging.stageDockerBlob(
+            runtime, stagingSession(request), result.digest().value(), result.blobId(),
+            subject(request), ClientAddress.from(request));
+      }
       return ResponseEntity.status(HttpStatus.CREATED)
           .header(DockerConstants.API_VERSION_HEADER, DockerConstants.API_VERSION)
           .header(DockerConstants.CONTENT_DIGEST_HEADER, result.digest().value())
