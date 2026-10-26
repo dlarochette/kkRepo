@@ -16,6 +16,11 @@ import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.GZIPOutputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -52,14 +57,31 @@ class HelmStagingContentAdapterTest {
   }
 
   @Test
-  void stageRetainsTheChartBytes() {
-    when(hosted.storeStagedBlob(
+  void stageRetainsTheChartBytesAndMetadata() throws Exception {
+    when(hosted.storeStagedBlobFile(
         eq(runtime), eq(path), any(), eq("application/gzip"), any(), any(), any()))
         .thenReturn(blob());
     HelmStagingContentAdapter.StagedUpload upload = adapter.stage(
-        runtime, path, new ByteArrayInputStream(new byte[] {1}), "application/gzip",
+        runtime, path, new ByteArrayInputStream(chart()), "application/gzip",
         "alice", "127.0.0.1");
     assertEquals(path, upload.logicalPath());
+    assertEquals("demo", upload.attributes().get("helmName"));
+    assertEquals("1.0.0", upload.attributes().get("helmVersion"));
+  }
+
+  private static byte[] chart() throws Exception {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    try (GZIPOutputStream gzip = new GZIPOutputStream(bytes);
+        TarArchiveOutputStream tar = new TarArchiveOutputStream(gzip)) {
+      byte[] chartYaml = "apiVersion: v2\nname: demo\nversion: 1.0.0\n"
+          .getBytes(StandardCharsets.UTF_8);
+      TarArchiveEntry entry = new TarArchiveEntry("demo/Chart.yaml");
+      entry.setSize(chartYaml.length);
+      tar.putArchiveEntry(entry);
+      tar.write(chartYaml);
+      tar.closeArchiveEntry();
+    }
+    return bytes.toByteArray();
   }
 
   private StagingItemRecord item() {
