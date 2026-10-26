@@ -2,6 +2,7 @@ package com.github.klboke.kkrepo.server.routing.builtin;
 
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
+import com.github.klboke.kkrepo.server.staging.StagingHttpSupport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
@@ -178,6 +179,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   private final RawHostedService rawHosted;
   private final RawProxyService rawProxy;
   private final RawGroupService rawGroup;
+  private StagingHttpSupport stagingHttp;
   private final ObjectMapper objectMapper;
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
   private final MavenPathParser parser = new MavenPathParser();
@@ -237,6 +239,11 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Autowired(required = false)
   public void setHuggingFaceService(HuggingFaceService huggingFace) {
     this.huggingFace = huggingFace;
+  }
+
+  @Autowired(required = false)
+  public void setStagingHttpSupport(StagingHttpSupport stagingHttp) {
+    this.stagingHttp = stagingHttp;
   }
 
   @Autowired
@@ -380,6 +387,13 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest request)
       throws IOException, ServletException {
+    if (stagingHttp != null) {
+      Optional<ResponseEntity<?>> staged = stagingHttp.dispatch(
+          request.runtime(), request.path(), request.servletRequest());
+      if (staged.isPresent()) {
+        return staged.get();
+      }
+    }
     return switch (request.method().name()) {
       case "GET" -> get(request.runtime(), request.repositoryName(), request.servletRequest());
       case "HEAD" -> head(request.runtime(), request.repositoryName(), request.servletRequest());
