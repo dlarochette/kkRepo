@@ -462,3 +462,24 @@ Current limitations:
 - Should a promotion be approvable by a second user (four-eyes) in the first release, or only by a
   distinct permission?
 - What is the retention window for failed/cancelled staged blobs before GC?
+
+## CLI
+
+`scripts/kkrepo-staging.sh` wraps the internal staging API for operators and CI bootstrap:
+
+```bash
+export KKREPO_URL=https://repo.example
+export KKREPO_USER=admin
+export KKREPO_PASSWORD=...
+
+scripts/kkrepo-staging.sh create release-2026-10 raw-release maven-release --approval-required
+scripts/kkrepo-staging.sh items 1
+scripts/kkrepo-staging.sh add-group 1 10 11 ADD
+scripts/kkrepo-staging.sh preflight 1
+scripts/kkrepo-staging.sh approve 1
+scripts/kkrepo-staging.sh promote 1
+scripts/kkrepo-staging.sh compensate 1
+scripts/kkrepo-staging.sh metrics
+```
+
+The CLI uses only `curl`; responses are returned as JSON and can be piped to `jq`.
