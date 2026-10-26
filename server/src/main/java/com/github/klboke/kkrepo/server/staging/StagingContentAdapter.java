@@ -5,6 +5,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetBlobRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
+import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.InputStream;
@@ -64,6 +65,15 @@ public interface StagingContentAdapter {
       StagingBlobSource source,
       String actor,
       String ip) {
+    return Optional.empty();
+  }
+
+  /**
+   * Builds a generated metadata response for a staging view when no staged item exists for the
+   * requested path. Formats that do not generate metadata return empty.
+   */
+  default Optional<MavenResponse> generatedMetadata(
+      RepositoryRuntime runtime, long sessionId, String rawPath, boolean headOnly) {
     return Optional.empty();
   }
 
