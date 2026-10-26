@@ -142,7 +142,8 @@ class StagingServiceTest {
 
   private static String manifest(List<StagingItemRecord> items) {
     StringBuilder value = new StringBuilder();
-    items.forEach(item -> value.append(item.repositoryId()).append('\u0000')
+    items.forEach(item -> value.append("item").append('\u0000')
+        .append(item.repositoryId()).append('\u0000')
         .append(item.logicalPath()).append('\u0000')
         .append(item.action()).append('\u0000')
         .append(item.sha256() == null ? "" : item.sha256()).append('\u0000')

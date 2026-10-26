@@ -361,6 +361,9 @@ PATCH  /internal/staging/sessions/{id}
 POST   /internal/staging/sessions/{id}/close
 POST   /internal/staging/sessions/{id}/cancel
 DELETE /internal/staging/sessions/{id}
+POST   /internal/staging/sessions/{id}/credential
+POST   /internal/staging/sessions/{id}/commit
+POST   /internal/staging/sessions/{id}/rollback
 POST   /internal/staging/sessions/{id}/repositories
 DELETE /internal/staging/sessions/{id}/repositories/{repositoryId}
 GET    /internal/staging/sessions/{id}/items
