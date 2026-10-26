@@ -54,8 +54,11 @@ class RoutingRulesBlackBoxCompatibilityTest {
       check(e, "PUT", "/repository/" + upstream + "/blocked/component/1.0/component-1.0.jar", "upstream", 201);
       check(e, "PUT", "/repository/" + fallback + "/blocked/component/1.0/component-1.0.jar", "fallback", 201);
       check(e, "PUT", "/repository/" + upstream + "/allowed/component/1.0/component-1.0.jar", "allowed", 201);
-      String remote = e.nexus ? "http://localhost:8081/repository/" + upstream + "/"
-          : e.base + "/repository/" + upstream + "/";
+      // The server's upstream address may differ from the host-side test client's address.
+      String upstreamBase = e.nexus ? "http://localhost:8081"
+          : CompatDefaults.setting("compat.routingRules.kkrepoUpstreamBaseUrl",
+              "ROUTING_RULES_KKREPO_UPSTREAM_BASE_URL").orElse(e.base);
+      String remote = CompatDefaults.stripTrailingSlash(upstreamBase) + "/repository/" + upstream + "/";
       e.create(proxy, "proxy", remote, rule, List.of());
       e.create(group, "group", null, null, List.of(proxy, fallback));
       assertEquals("upstream", check(e, "GET", "/repository/" + proxy + "/blocked/component/1.0/component-1.0.jar", null, 200).body());
