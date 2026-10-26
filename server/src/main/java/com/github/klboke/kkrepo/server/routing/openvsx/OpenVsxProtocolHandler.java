@@ -18,12 +18,15 @@ import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
 import com.github.klboke.kkrepo.server.security.ForwardedHeaderPolicy;
+import com.github.klboke.kkrepo.server.staging.StagingHttpSupport;
 import com.github.klboke.kkrepo.server.blob.TempBlobFiles;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -50,6 +53,7 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
   private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
   private static final int MAX_GALLERY_BODY_BYTES = 1024 * 1024;
+  private StagingHttpSupport stagingHttp;
 
   public OpenVsxProtocolHandler(
       OpenVsxHostedService hosted,
@@ -64,6 +68,11 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
     this.objectMapper = objectMapper;
   }
 
+  @Autowired(required = false)
+  public void setStagingHttpSupport(StagingHttpSupport stagingHttp) {
+    this.stagingHttp = stagingHttp;
+  }
+
   @Override
   public Collection<RepositoryProtocolRoute> routes() {
     return ROUTES;
@@ -72,6 +81,13 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest context) throws IOException {
     HttpServletRequest request = context.servletRequest();
+    if (stagingHttp != null) {
+      Optional<ResponseEntity<?>> staged = stagingHttp.dispatch(
+          context.runtime(), context.path(), request);
+      if (staged.isPresent()) {
+        return staged.get();
+      }
+    }
     String baseUrl = serverBaseUrl(request) + request.getContextPath()
         + RepositoryUrlPrefix.path(request);
     String repository = context.runtime().name();
