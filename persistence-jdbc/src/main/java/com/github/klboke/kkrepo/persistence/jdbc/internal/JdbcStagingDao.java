@@ -468,6 +468,29 @@ public class JdbcStagingDao implements StagingDao {
   }
 
   @Override
+  public Map<String, Long> countSessionsByState() {
+    return counts("SELECT state, COUNT(*) FROM staging_session GROUP BY state");
+  }
+
+  @Override
+  public Map<String, Long> countItemsByStatus() {
+    return counts("SELECT status, COUNT(*) FROM staging_item GROUP BY status");
+  }
+
+  @Override
+  public Map<String, Long> countGroupChangesByStatus() {
+    return counts("SELECT status, COUNT(*) FROM staging_group_change GROUP BY status");
+  }
+
+  private Map<String, Long> counts(String sql) {
+    return jdbcTemplate.query(sql, (rs, rowNum) ->
+            Map.entry(rs.getString(1), rs.getLong(2)))
+        .stream()
+        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+            Map.Entry::getKey, Map.Entry::getValue));
+  }
+
+  @Override
   public long insertPromotion(StagingPromotionRecord record) {
     return JdbcInserts.insert(jdbcTemplate, """
         INSERT INTO staging_promotion

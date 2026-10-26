@@ -200,7 +200,8 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
 
   private Optional<String> stagingPermission(String method, String uri) {
     if ("GET".equals(method) || "HEAD".equals(method)) {
-      return Optional.of("nexus:staging:read");
+      return Optional.of(uri.endsWith("/metrics")
+          ? "nexus:staging:admin" : "nexus:staging:read");
     }
     if ("DELETE".equals(method)) {
       return Optional.of("nexus:staging:admin");

@@ -42,6 +42,11 @@ public class StagingController {
     return result.session();
   }
 
+  @GetMapping("/metrics")
+  public StagingService.StagingMetrics metrics(HttpServletRequest servlet) {
+    return staging.metrics(subject(servlet));
+  }
+
   @GetMapping("/sessions")
   public List<StagingService.StagingSessionView> list(
       @RequestParam(value = "state", required = false) String state,

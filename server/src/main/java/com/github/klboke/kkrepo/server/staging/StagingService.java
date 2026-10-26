@@ -370,6 +370,18 @@ public class StagingService {
   }
 
   @Transactional(readOnly = true)
+  public StagingMetrics metrics(PermissionSubject actor) {
+    if (!isAdmin(actor)) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Staging admin permission required");
+    }
+    return new StagingMetrics(
+        staging.countSessionsByState(),
+        staging.countItemsByStatus(),
+        staging.countGroupChangesByStatus(),
+        Instant.now());
+  }
+
+  @Transactional(readOnly = true)
   public List<StagingItemView> items(long sessionId, PermissionSubject actor) {
     StagingSessionRecord session = findSession(sessionId);
     requireOwnerOrAdmin(session, actor);
@@ -1808,6 +1820,13 @@ public class StagingService {
   }
 
   private record ItemValidation(StagingItemRecord item, String status, String message) {
+  }
+
+  public record StagingMetrics(
+      Map<String, Long> sessionsByState,
+      Map<String, Long> itemsByStatus,
+      Map<String, Long> groupChangesByStatus,
+      Instant observedAt) {
   }
 
   public record GroupChangeView(

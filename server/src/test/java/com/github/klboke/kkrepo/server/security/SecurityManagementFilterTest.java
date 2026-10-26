@@ -52,6 +52,7 @@ class SecurityManagementFilterTest {
   @ParameterizedTest
   @CsvSource({
       "GET,/internal/staging/sessions,nexus:staging:read",
+      "GET,/internal/staging/metrics,nexus:staging:admin",
       "POST,/internal/staging/sessions,nexus:staging:create",
       "PATCH,/internal/staging/sessions/1,nexus:staging:create",
       "POST,/internal/staging/sessions/1/preflight,nexus:staging:promote",

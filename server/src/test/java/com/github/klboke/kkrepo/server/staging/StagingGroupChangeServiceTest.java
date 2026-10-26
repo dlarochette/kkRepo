@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.github.klboke.kkrepo.auth.AccessDecision;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryType;
@@ -79,6 +80,24 @@ class StagingGroupChangeServiceTest {
     verify(staging).addRepository(1L, 11L, "raw");
     verify(staging).upsertGroupChange(any());
     verify(audit).insert(any());
+  }
+
+  @Test
+  void metricsRequireStagingAdmin() {
+    when(security.decide(actor, "nexus:staging:admin"))
+        .thenReturn(AccessDecision.deny("not admin"));
+    assertThrows(ResponseStatusException.class, () -> service.metrics(actor));
+
+    when(security.decide(actor, "nexus:staging:admin"))
+        .thenReturn(AccessDecision.allow());
+    when(staging.countSessionsByState()).thenReturn(Map.of(StagingDao.SESSION_OPEN, 2L));
+    when(staging.countItemsByStatus()).thenReturn(Map.of(StagingDao.ITEM_STAGED, 3L));
+    when(staging.countGroupChangesByStatus()).thenReturn(Map.of(StagingDao.GROUP_STAGED, 1L));
+
+    StagingService.StagingMetrics metrics = service.metrics(actor);
+    assertEquals(2L, metrics.sessionsByState().get(StagingDao.SESSION_OPEN));
+    assertEquals(3L, metrics.itemsByStatus().get(StagingDao.ITEM_STAGED));
+    assertEquals(1L, metrics.groupChangesByStatus().get(StagingDao.GROUP_STAGED));
   }
 
   @Test

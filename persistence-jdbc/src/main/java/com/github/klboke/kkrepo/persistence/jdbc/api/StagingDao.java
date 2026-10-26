@@ -127,6 +127,12 @@ public interface StagingDao {
 
   int deleteGroupChanges(long sessionId);
 
+  Map<String, Long> countSessionsByState();
+
+  Map<String, Long> countItemsByStatus();
+
+  Map<String, Long> countGroupChangesByStatus();
+
   long insertPromotion(StagingPromotionRecord record);
 
   Optional<StagingPromotionRecord> findPromotion(long promotionId);
