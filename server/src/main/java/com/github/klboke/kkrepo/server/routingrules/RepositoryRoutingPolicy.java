@@ -1,6 +1,8 @@
 package com.github.klboke.kkrepo.server.routingrules;
 
 import com.github.klboke.kkrepo.core.http.UriPathDecoder;
+import com.github.klboke.kkrepo.core.RepositoryFormat;
+import com.github.klboke.kkrepo.protocol.npm.NpmPathParser;
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao.Rule;
@@ -59,7 +61,21 @@ public class RepositoryRoutingPolicy {
 
   public RepositoryRuntime prepare(RepositoryRuntime runtime, String path, HttpServletRequest request) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
-    return prepareMatchedPath(runtime, matchingPath(path, false), request);
+    return prepareMatchedPath(runtime, runtime.format() == RepositoryFormat.NPM
+        ? npmMatchingPath(path) : matchingPath(path, false), request);
+  }
+
+  private static String npmMatchingPath(String raw) {
+    // Reuse the handler's parser: npm permits encoded scope separators and canonicalizes
+    // package-name whitespace/trailing slashes before looking up metadata or tarball caches.
+    var path = new NpmPathParser().parse(raw);
+    return switch (path.kind()) {
+      case PACKAGE_ROOT, TARBALL -> "/" + path.assetPath();
+      case PACKAGE_VERSION -> "/" + path.packageId().id() + "/" + path.packageVersion();
+      case DIST_TAGS -> "/-/package/" + path.packageId().id() + "/dist-tags";
+      case DIST_TAG -> "/-/package/" + path.packageId().id() + "/dist-tags/" + path.tag();
+      default -> matchingPath(raw, false);
+    };
   }
 
   private RepositoryRuntime prepareMatchedPath(RepositoryRuntime runtime, String path, HttpServletRequest request) {

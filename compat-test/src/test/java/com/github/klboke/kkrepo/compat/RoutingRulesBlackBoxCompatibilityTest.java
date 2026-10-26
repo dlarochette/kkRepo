@@ -17,11 +17,57 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.Test;
 
 class RoutingRulesBlackBoxCompatibilityTest {
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(15)).build();
+
+  @Test
+  void npmCachedPackageIdentityCannotBypassRoutingRules() throws Exception {
+    assumeTrue(Boolean.parseBoolean(CompatDefaults.setting("compat.routingRules", "ROUTING_RULES_COMPAT_ENABLED").orElse("false")));
+    var endpoints = new java.util.ArrayList<Endpoint>();
+    endpoints.add(new Endpoint(CompatDefaults.nexusBaseUrl().orElseThrow(),
+        CompatDefaults.nexusUsername().orElseThrow(), CompatDefaults.nexusPassword().orElseThrow(), true, "npm"));
+    if (!Boolean.getBoolean("compat.routingRules.referenceOnly")) {
+      endpoints.add(new Endpoint(CompatDefaults.nexusPlusBaseUrl().orElseThrow(),
+          CompatDefaults.nexusPlusUsername().orElseThrow(), CompatDefaults.nexusPlusPassword().orElseThrow(), false, "npm"));
+    }
+    for (Endpoint e : endpoints) {
+      String prefix = "rr452-" + UUID.randomUUID().toString().substring(0, 8);
+      String upstream = prefix + "-upstream", proxy = prefix + "-proxy", group = prefix + "-group";
+      String rule = prefix + "-rule", rules = "/service/rest/v1/routing-rules";
+      Endpoint raw = new Endpoint(e.base, e.username, e.password, e.nexus, "raw");
+      try {
+        check(e, "POST", rules, rule(rule, "BLOCK", List.of("/never")), 204);
+        raw.create(upstream, "hosted", null, null, List.of());
+        String fixture = JSON.writeValueAsString(Map.of("name", "private", "dist-tags", Map.of("latest", "1.0.0"),
+            "versions", Map.of("1.0.0", Map.of("name", "private", "version", "1.0.0", "dist",
+                Map.of("tarball", "https://example.com/package.tgz")))));
+        check(raw, "PUT", "/repository/" + upstream + "/private", fixture, 201);
+        e.create(proxy, "proxy", e.upstreamBase() + "/repository/" + upstream + "/", rule, List.of());
+        e.create(group, "group", null, null, List.of(proxy));
+        assertEquals("private", JSON.readTree(check(e, "GET", "/repository/" + proxy + "/private", null, 200).body()).path("name").asText());
+        check(e, "GET", "/repository/" + group + "/private", null, 200);
+        check(e, "PUT", rules + "/" + rule, rule(rule, "BLOCK", List.of("/private")), 204);
+        check(e, "GET", "/repository/" + proxy + "/private", null, 403);
+        if (!e.nexus) {
+          // Nexus 3.68 can retain its warmed npm group packument after a rule change.
+          // kkRepo projects members before serving group metadata and excludes that cache.
+          check(e, "GET", "/repository/" + group + "/private", null, 404);
+          for (String alias : List.of("%20private", "private%20", "private/")) {
+            check(e, "GET", "/repository/" + proxy + "/" + alias, null, 403);
+            check(e, "HEAD", "/repository/" + proxy + "/" + alias, null, 403);
+            check(e, "GET", "/repository/" + group + "/" + alias, null, 404);
+          }
+        }
+      } finally {
+        for (String name : List.of(group, proxy, upstream)) e.removeRepository(name);
+        e.send("DELETE", rules + "/" + rule, null);
+      }
+    }
+  }
 
   @ParameterizedTest
   @ValueSource(strings = {"raw", "maven2"})
@@ -60,10 +106,7 @@ class RoutingRulesBlackBoxCompatibilityTest {
         check(e, "PUT", "/repository/" + upstream + "/allowed/item;public.jar", "public", 201);
       }
       // The server's upstream address may differ from the host-side test client's address.
-      String upstreamBase = e.nexus ? "http://localhost:8081"
-          : CompatDefaults.setting("compat.routingRules.kkrepoUpstreamBaseUrl",
-              "ROUTING_RULES_KKREPO_UPSTREAM_BASE_URL").orElse(e.base);
-      String remote = CompatDefaults.stripTrailingSlash(upstreamBase) + "/repository/" + upstream + "/";
+      String remote = e.upstreamBase() + "/repository/" + upstream + "/";
       e.create(proxy, "proxy", remote, rule, List.of());
       e.create(group, "group", null, null, List.of(proxy, fallback));
       if (!e.nexus && e.format.equals("raw")) {
@@ -123,6 +166,12 @@ class RoutingRulesBlackBoxCompatibilityTest {
   }
 
   private record Endpoint(String base, String username, String password, boolean nexus, String format) {
+    String upstreamBase() {
+      return CompatDefaults.stripTrailingSlash(nexus ? "http://localhost:8081"
+          : CompatDefaults.setting("compat.routingRules.kkrepoUpstreamBaseUrl",
+              "ROUTING_RULES_KKREPO_UPSTREAM_BASE_URL").orElse(base));
+    }
+
     HttpResponse<String> send(String method, String path, Object body) throws Exception {
       String serialized = body == null ? "" : body instanceof String s ? s : JSON.writeValueAsString(body);
       return HTTP.send(HttpRequest.newBuilder(URI.create(base + path)).timeout(Duration.ofSeconds(60))
@@ -136,7 +185,7 @@ class RoutingRulesBlackBoxCompatibilityTest {
     void removeRepository(String name) throws Exception {
       if (!nexus) {
         // Explicit source also removes Maven group-owned cache assets, not member contents.
-        for (String path : List.of("blocked", "allowed", "allowed;private")) {
+        for (String path : List.of("blocked", "allowed", "allowed;private", "private")) {
           HttpResponse<String> removed = send("DELETE", "/internal/browse/" + name
               + "?path=" + path + "&source=" + name, null);
           assertTrue(removed.statusCode() == 200 || removed.statusCode() == 404, removed.body());

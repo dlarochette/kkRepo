@@ -95,7 +95,11 @@ public class RepositoryProtocolDispatcher {
       MultipartFile multipartFile) throws IOException, ServletException {
     RepositoryRuntime runtime = resolveRuntime(repositoryName, request);
     String path = routePath(repositoryName, request);
-    if (routingPolicy != null) runtime = routingPolicy.prepareRepository(runtime, request);
+    if (routingPolicy != null) {
+      runtime = runtime.format() == RepositoryFormat.NPM
+          ? routingPolicy.prepare(runtime, path, request)
+          : routingPolicy.prepareRepository(runtime, request);
+    }
     RouteKey key = new RouteKey(runtime.format(), runtime.type(), method);
     for (RegisteredRoute candidate : routes.getOrDefault(key, List.of())) {
       if (!candidate.route().matches(runtime, method, path)) continue;

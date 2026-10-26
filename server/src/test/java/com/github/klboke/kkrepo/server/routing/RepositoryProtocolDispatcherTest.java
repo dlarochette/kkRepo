@@ -28,6 +28,42 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class RepositoryProtocolDispatcherTest {
   @Test
+  void npmRulesUseThePackageIdentityConsumedByHandlers() {
+    RepositoryRuntime proxy = runtime(RepositoryFormat.NPM, RepositoryType.PROXY);
+    RepositoryRuntime group = runtime(RepositoryFormat.NPM, RepositoryType.GROUP).withMembers(List.of(proxy));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+        new RoutingRuleDao.Rule(1, "private", "", "BLOCK", List.of("/private(?:/.*)?",
+            "/@scope/private(?:/.*)?", "/-/package/private/dist-tags(?:/.*)?")))));
+    for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+      for (String path : List.of("private", "%20private", "private%20", "private/",
+          "@scope%2Fprivate", "@scope/private%20", "%20private/1.0.0",
+          "private%20/-/private-1.0.0.tgz", "private%20/-rev/1",
+          "-/package/%20private/dist-tags", "-/package/private%20/dist-tags/latest")) {
+        RecordingHandler denied = handler(RepositoryProtocolRoute.anyPath(
+            RepositoryFormat.NPM, RepositoryType.PROXY, method, 0), ResponseEntity.ok().build());
+        var direct = dispatcher(proxy, denied);
+        direct.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+        assertThrows(RepositoryRoutingPolicy.Blocked.class,
+            () -> direct.dispatchRead("repo", request(method.name(), "/repository/repo/" + path), method), path);
+        assertEquals(0, denied.invocations);
+        assertEquals(200, direct.dispatchRead("repo",
+            request(method.name(), "/repository/repo/public"), method).getStatusCode().value());
+        assertEquals(200, direct.dispatchRead("repo",
+            request(method.name(), "/repository/repo/%2520private"), method).getStatusCode().value());
+        assertEquals(200, direct.dispatchRead("repo",
+            request(method.name(), "/repository/repo/-/ping"), method).getStatusCode().value());
+        RecordingHandler filtered = handler(RepositoryProtocolRoute.anyPath(
+            RepositoryFormat.NPM, RepositoryType.GROUP, method, 0), ResponseEntity.ok().build());
+        var grouped = dispatcher(group, filtered);
+        grouped.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+        grouped.dispatchRead("repo", request(method.name(), "/repository/repo/" + path), method);
+        assertTrue(filtered.lastRequest.runtime().members().isEmpty(), path);
+      }
+    }
+  }
+
+  @Test
   void routingRulesPreserveSemicolonsConsumedByRawHandlers() {
     RepositoryRuntime runtime = runtime(RepositoryFormat.RAW, RepositoryType.PROXY);
     var rules = mock(RoutingRuleDao.class);
