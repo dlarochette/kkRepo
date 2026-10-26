@@ -368,6 +368,28 @@ public class StagingService {
     return view(staging.findSessionById(session.id()).orElseThrow());
   }
 
+  /** Deletes terminal session history. Active sessions must be cancelled first. */
+  @Transactional
+  public void delete(long sessionId, PermissionSubject actor, String remoteAddr) {
+    if (!isAdmin(actor)) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Staging admin permission required");
+    }
+    StagingSessionRecord session = staging.lockSession(sessionId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Staging session not found"));
+    if (!Set.of(StagingDao.SESSION_PROMOTED, StagingDao.SESSION_FAILED,
+        StagingDao.SESSION_CANCELLED).contains(session.state())) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Cancel the staging session before deleting it");
+    }
+    for (StagingItemRecord item : staging.listItems(session.id())) {
+      blobReferences.releaseOwner(BLOB_OWNER_TYPE, item.id());
+    }
+    staging.deleteItems(session.id());
+    audit(actor, remoteAddr, "staging-delete", session, "deleted", Map.of());
+    staging.deleteSession(session.id());
+  }
+
   @Transactional(readOnly = true)
   public StagingSessionView get(long sessionId, PermissionSubject actor) {
     StagingSessionRecord session = findSession(sessionId);

@@ -61,6 +61,13 @@ public class StagingController {
     return staging.get(id, subject(servlet));
   }
 
+  @DeleteMapping("/sessions/{id}")
+  public ResponseEntity<Void> delete(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    staging.delete(id, subject(servlet), ClientAddress.from(servlet));
+    return ResponseEntity.noContent().build();
+  }
+
   @PatchMapping("/sessions/{id}")
   public StagingService.StagingSessionView update(
       @PathVariable("id") long id,
