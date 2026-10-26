@@ -1126,6 +1126,16 @@ public class StagingService {
       String rawPath,
       boolean headOnly,
       PermissionSubject actor) {
+    return getStagedContent(runtime, sessionKey, rawPath, headOnly, actor, null);
+  }
+
+  public Optional<MavenResponse> getStagedContent(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String rawPath,
+      boolean headOnly,
+      PermissionSubject actor,
+      String repositoryBaseUrl) {
     StagingSessionRecord session = findSessionByKey(sessionKey, false);
     requireSessionReadable(session, runtime, actor);
     StagingContentAdapter adapter = adapterFor(runtime.format());
@@ -1145,12 +1155,19 @@ public class StagingService {
       throw new MavenExceptions.MethodNotAllowed(
           "Staging reads are not supported for " + runtime.format().id() + " repositories");
     }
+    if (adapter != null && adapter.generatedMetadataPreferred(runtime, rawPath)) {
+      Optional<MavenResponse> generated = adapter.generatedMetadata(
+          runtime, session.id(), rawPath, headOnly, repositoryBaseUrl);
+      if (generated.isPresent()) {
+        return generated;
+      }
+    }
     Optional<StagingItemRecord> staged = staging.findItem(
         session.id(), runtime.id(), PersistenceHashes.pathHash(path));
     if (staged.isEmpty()) {
       return adapter == null
           ? Optional.empty()
-          : adapter.generatedMetadata(runtime, session.id(), rawPath, headOnly);
+          : adapter.generatedMetadata(runtime, session.id(), rawPath, headOnly, repositoryBaseUrl);
     }
     StagingItemRecord item = staged.get();
     if (item.action().equals(StagingDao.ITEM_DELETE)) {

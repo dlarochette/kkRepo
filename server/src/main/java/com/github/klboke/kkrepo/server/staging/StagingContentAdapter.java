@@ -77,6 +77,21 @@ public interface StagingContentAdapter {
     return Optional.empty();
   }
 
+  /** Variant that also receives the external repository base URL. */
+  default Optional<MavenResponse> generatedMetadata(
+      RepositoryRuntime runtime,
+      long sessionId,
+      String rawPath,
+      boolean headOnly,
+      String repositoryBaseUrl) {
+    return generatedMetadata(runtime, sessionId, rawPath, headOnly);
+  }
+
+  /** True when generated metadata must take precedence over a staged item at the same path. */
+  default boolean generatedMetadataPreferred(RepositoryRuntime runtime, String rawPath) {
+    return false;
+  }
+
   /**
    * Format-specific preflight rule. Return a human-readable conflict, or {@code null} to allow the
    * generic checks to decide.
