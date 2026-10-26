@@ -102,4 +102,8 @@ public final class RepositoryProtocolControllerTestSupport extends RepositoryPro
   void setGoHostedService(GoHostedService service) {
     handler.setGoHostedService(service);
   }
+
+  void setStagingService(com.github.klboke.kkrepo.server.staging.StagingService service) {
+    handler.setStagingService(service);
+  }
 }

@@ -1,7 +1,23 @@
-# Multi-Repository Staging Design (Future)
+# Multi-Repository Staging Design
 
-Status: design only. This document records the approach for a future feature; no staging tables or
-endpoints exist in the current codebase.
+Status: implemented foundation and Raw hosted staging. The durable lifecycle, session API, staged
+content isolation, preflight and single-transaction promotion are available for Raw repositories.
+Other formats and staged group membership remain future work (phases 3-5 below).
+
+Implementation notes:
+
+- The delivered model stores staged rows in dedicated `staging_*` tables instead of adding a
+  `staging_session_id` column to `asset`/`component`. This keeps every existing live query
+  unchanged while preserving the overlay semantics: staged content is never visible to normal
+  clients, and promotion links the already content-addressed blob into the live asset tables.
+- Staged blobs are retained through `blob_reference` with owner type `staging_item`, so the normal
+  blob garbage collector cannot reclaim them while a session is open.
+- Promotion runs in one transaction, locks the session and target repositories in ascending
+  repository-id order, revalidates every item, applies ADD/REPLACE/DELETE through the normal Raw
+  writer, releases the staging blob ownership and records an idempotent report.
+- Session state, item state and promotion reports live only in MySQL/PostgreSQL. No node-local
+  cache participates in staging correctness.
+
 
 ## Problem
 
@@ -294,6 +310,69 @@ POST   /internal/staging/sessions/{id}/compensate
 
 Content writes use the normal repository endpoints with `X-KkRepo-Staging: {id}`. This means every
 existing protocol client and the Components API can participate without a new upload format.
+
+## Implemented API and permissions
+
+```text
+POST   /internal/staging/sessions
+GET    /internal/staging/sessions?state=OPEN
+GET    /internal/staging/sessions/{id}
+PATCH  /internal/staging/sessions/{id}
+POST   /internal/staging/sessions/{id}/close
+POST   /internal/staging/sessions/{id}/cancel
+POST   /internal/staging/sessions/{id}/repositories
+DELETE /internal/staging/sessions/{id}/repositories/{repositoryId}
+GET    /internal/staging/sessions/{id}/items
+POST   /internal/staging/sessions/{id}/preflight
+POST   /internal/staging/sessions/{id}/promote
+GET    /internal/staging/sessions/{id}/report
+```
+
+Content writes and reads use existing Raw repository routes with the `X-KkRepo-Staging` header:
+
+```bash
+curl -u ci:token -T dist/app.jar \
+  -H 'X-KkRepo-Staging: release-2026-10' \
+  https://repo.example/repository/raw-release/dist/app.jar
+
+curl -u ci:token \
+  -H 'X-KkRepo-Staging: release-2026-10' \
+  https://repo.example/repository/raw-release/dist/app.jar
+```
+
+Without the header the same URLs serve and write live content, so no client URL changes.
+
+Session endpoints require `nexus:staging:read`, `nexus:staging:create` or
+`nexus:staging:promote`; deleting session repositories requires `nexus:staging:admin`. The built-in
+`nx-admin` role has all of these through `nx-all`. Repository content requests still pass through
+the normal repository permissions (`read`, `edit`, `delete`) before session state is evaluated, so a
+staging session cannot widen repository access. Session operations additionally require the caller
+to own the session unless it holds `nexus:staging:admin`.
+
+Promotion is intentionally a distinct permission from staging writes so a CI token can be allowed
+to upload staged content without being able to publish it.
+
+## Delivered implementation
+
+| Area | Location |
+| --- | --- |
+| Schema | `V61__multi_repo_staging.sql` (MySQL and PostgreSQL) |
+| Durable state | `StagingDao`, `JdbcStagingDao`, `staging_session`, `staging_session_repository`, `staging_item`, `staging_promotion` |
+| Lifecycle | `server/staging/StagingService.java` |
+| Internal API | `server/staging/StagingController.java` |
+| Permission mapping | `SecurityManagementFilter` (`/internal/staging/**`) |
+| Raw content | `X-KkRepo-Staging` dispatch in `BuiltinRepositoryProtocolHandler`; staged blob writes through `RawHostedService.storeStagedBlob` |
+| Tests | `StagingServiceTest`, persistence contract `stagingSessionsItemsAndPromotionsRoundTripWithRevisionFence` on MySQL and PostgreSQL |
+
+Current limitations:
+
+- Only `RAW` hosted repositories are accepted as staging targets. Other formats are rejected with a
+  clear error until their protocol write paths implement staged publication.
+- Group membership changes are represented by the schema direction but not yet exposed by the API.
+- There is no background expiry worker yet; expired sessions reject writes and promotion but keep
+  their staged blobs until an operator cancels the session.
+- Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
+  atomically instead of overwriting the winner.
 
 ## Format-specific notes
 
