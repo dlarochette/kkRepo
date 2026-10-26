@@ -93,6 +93,88 @@ class RawAssetWriter {
         extraBlobAttributes, createdBy, createdByIp, ComponentBinding.perAsset(), keepResponseFile);
   }
 
+  /**
+   * Stores staged bytes and their blob row without creating a live asset, component, or Browse
+   * node. The caller must publish blob ownership in the same transaction.
+   */
+  AssetBlobRecord storeStagedBlob(
+      RepositoryRuntime runtime,
+      BlobStorage storage,
+      long blobStoreId,
+      String path,
+      InputStream body,
+      String contentTypeHint,
+      Map<String, ?> extraBlobAttributes,
+      String createdBy,
+      String createdByIp) {
+    DigestedUpload upload = uploadWithDigests(
+        runtime, storage, blobStoreId, path, body, extraBlobAttributes);
+    try {
+      AssetBlobRecord blob = executePersist(
+          "Store staged blob " + runtime.name() + "/" + path,
+          () -> persistStagedBlob(
+              blobStoreId, upload, contentTypeHint, extraBlobAttributes, createdBy, createdByIp));
+      cleanupUnusedUploadedBlob(storage, blobStoreId, upload, blob);
+      TempBlobFiles.deleteQuietly(upload.tempFile());
+      return blob;
+    } catch (RuntimeException error) {
+      cleanupUploadedBlob(storage, blobStoreId, upload);
+      TempBlobFiles.deleteQuietly(upload.tempFile());
+      throw error;
+    }
+  }
+
+  private AssetBlobRecord persistStagedBlob(
+      long blobStoreId,
+      DigestedUpload upload,
+      String contentTypeHint,
+      Map<String, ?> extraBlobAttributes,
+      String createdBy,
+      String createdByIp) {
+    Instant now = Instant.now();
+    String contentType = contentTypeHint == null || contentTypeHint.isBlank()
+        ? MediaType.APPLICATION_OCTET_STREAM_VALUE
+        : contentTypeHint;
+    BlobReference ref = upload.reference();
+    Digests digests = upload.digests();
+    String blobRef = BlobReferenceCodec.format(ref);
+    Map<String, Object> blobAttrs = new LinkedHashMap<>();
+    blobAttrs.put("sha512", digests.sha512());
+    if (extraBlobAttributes != null) {
+      extraBlobAttributes.forEach((key, value) -> {
+        if (value != null) blobAttrs.put(key, value);
+      });
+    }
+    AssetBlobRecord persisted = reusableBlob(
+            blobStoreId, digests.sha256(), digests.size(), extraBlobAttributes)
+        .orElse(null);
+    if (persisted == null) {
+      persisted = assetDao.insertBlobOrFindExisting(new AssetBlobRecord(
+          null,
+          blobStoreId,
+          blobRef,
+          PersistenceHashes.blobRefHash(blobRef),
+          ref.objectKey(),
+          PersistenceHashes.objectKeyHash(ref.objectKey()),
+          digests.sha1(),
+          digests.sha256(),
+          digests.md5(),
+          digests.size(),
+          contentType,
+          createdBy,
+          createdByIp,
+          now,
+          now,
+          blobAttrs));
+    }
+    if (extraBlobAttributes != null && !extraBlobAttributes.isEmpty()
+        && !blobAttrs.equals(persisted.attributes())) {
+      assetDao.updateBlobAttributes(persisted.id(), blobAttrs);
+      persisted = persisted.withAttributes(blobAttrs);
+    }
+    return persisted;
+  }
+
   Stored writeUnindexed(
       RepositoryRuntime runtime,
       BlobStorage storage,

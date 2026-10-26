@@ -132,6 +132,27 @@ public class RawHostedService {
     return MavenResponse.created();
   }
 
+  /**
+   * Stores bytes for a staging session without creating live repository rows.
+   *
+   * <p>The returned blob is not owned by any asset yet; callers must retain it through
+   * {@code BlobReferenceDao} in the same transaction.
+   */
+  public com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetBlobRecord storeStagedBlob(
+      RepositoryRuntime runtime,
+      String rawPath,
+      InputStream body,
+      String contentType,
+      Map<String, ?> blobAttributes,
+      String createdBy,
+      String createdByIp) {
+    ensureHosted(runtime);
+    String path = normalizeAssetPath(rawPath);
+    return writer.storeStagedBlob(
+        runtime, blobStorage(runtime), requireBlobStore(runtime), path, body, contentType,
+        blobAttributes == null ? Map.of() : blobAttributes, createdBy, createdByIp);
+  }
+
   public MavenResponse putInternalWithComponent(
       RepositoryRuntime runtime,
       String rawPath,
@@ -356,7 +377,7 @@ public class RawHostedService {
         : new String[] {directory + "/index.html", directory + "/index.htm"};
   }
 
-  static String normalizeAssetPath(String rawPath) {
+  public static String normalizeAssetPath(String rawPath) {
     String path = normalizeDirectoryPath(rawPath);
     if (path.isEmpty()) {
       throw new MavenExceptions.MavenNotFoundException("Missing raw path");

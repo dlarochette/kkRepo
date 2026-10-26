@@ -2,6 +2,7 @@ package com.github.klboke.kkrepo.server.routing.builtin;
 
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
+import com.github.klboke.kkrepo.server.staging.StagingService;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
@@ -178,6 +179,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   private final RawHostedService rawHosted;
   private final RawProxyService rawProxy;
   private final RawGroupService rawGroup;
+  private StagingService staging;
   private final ObjectMapper objectMapper;
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
   private final MavenPathParser parser = new MavenPathParser();
@@ -237,6 +239,11 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Autowired(required = false)
   public void setHuggingFaceService(HuggingFaceService huggingFace) {
     this.huggingFace = huggingFace;
+  }
+
+  @Autowired(required = false)
+  public void setStagingService(StagingService staging) {
+    this.staging = staging;
   }
 
   @Autowired
@@ -380,6 +387,10 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest request)
       throws IOException, ServletException {
+    String stagingSession = request.servletRequest().getHeader(StagingService.HEADER);
+    if (staging != null && stagingSession != null && !stagingSession.isBlank()) {
+      return handleStaged(request, stagingSession.trim());
+    }
     return switch (request.method().name()) {
       case "GET" -> get(request.runtime(), request.repositoryName(), request.servletRequest());
       case "HEAD" -> head(request.runtime(), request.repositoryName(), request.servletRequest());
@@ -391,6 +402,39 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
           request.runtime(), request.repositoryName(), request.servletRequest());
       default -> throw new MavenExceptions.MethodNotAllowed(
           "Unsupported repository HTTP method: " + request.method());
+    };
+  }
+
+  private ResponseEntity<?> handleStaged(
+      RepositoryProtocolRequest request, String sessionKey) throws IOException {
+    RepositoryRuntime runtime = request.runtime();
+    String path = request.path();
+    return switch (request.method().name()) {
+      case "GET" -> toStreamingResponse(staging.getRaw(
+          runtime, sessionKey, path, false,
+          requestPermissionSubject(request.servletRequest())), request.servletRequest());
+      case "HEAD" -> toHeadResponse(staging.getRaw(
+          runtime, sessionKey, path, true,
+          requestPermissionSubject(request.servletRequest())), request.servletRequest());
+      case "PUT" -> {
+        try (InputStream body = request.servletRequest().getInputStream()) {
+          StagingService.StagingWriteResult result = staging.putRaw(
+              runtime, sessionKey, path, body, request.contentType(),
+              requestPermissionSubject(request.servletRequest()), requestUserId(request.servletRequest()));
+          yield ResponseEntity.status(HttpStatus.CREATED)
+              .header(StagingService.HEADER, String.valueOf(result.sessionId()))
+              .header("X-KkRepo-Staging-Action", result.action())
+              .build();
+        }
+      }
+      case "DELETE" -> {
+        int deleted = staging.deleteRaw(
+            runtime, sessionKey, path,
+            requestPermissionSubject(request.servletRequest()), requestUserId(request.servletRequest()));
+        yield ResponseEntity.status(deleted == 0 ? HttpStatus.NOT_FOUND : HttpStatus.NO_CONTENT).build();
+      }
+      default -> throw new MavenExceptions.MethodNotAllowed(
+          "Staging does not support " + request.method() + " on repository content");
     };
   }
 
