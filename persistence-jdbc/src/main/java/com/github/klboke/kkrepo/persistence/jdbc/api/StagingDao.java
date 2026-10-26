@@ -55,6 +55,9 @@ public interface StagingDao {
 
   List<StagingSessionRecord> listSessions(String state, int limit);
 
+  /** Returns active sessions whose expiry has passed, oldest deadline first. */
+  List<StagingSessionRecord> listExpiredActive(Instant now, int limit);
+
   /**
    * Applies one lifecycle transition when the locked row still has the expected revision and one
    * of the allowed states.

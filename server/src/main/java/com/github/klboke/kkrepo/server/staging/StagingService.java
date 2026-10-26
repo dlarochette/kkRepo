@@ -346,6 +346,34 @@ public class StagingService {
     return view(staging.findSessionById(session.id()).orElseThrow());
   }
 
+  /** Cancels one expired session; safe to call repeatedly from any replica. */
+  @Transactional
+  public boolean expire(long sessionId) {
+    StagingSessionRecord session = staging.lockSession(sessionId).orElse(null);
+    if (session == null
+        || session.expiresAt() == null
+        || session.expiresAt().isAfter(Instant.now())
+        || !Set.of(StagingDao.SESSION_OPEN, StagingDao.SESSION_FROZEN,
+            StagingDao.SESSION_PREFLIGHTED, StagingDao.SESSION_FAILED)
+            .contains(session.state())) {
+      return false;
+    }
+    for (StagingItemRecord item : staging.listItems(session.id())) {
+      blobReferences.releaseOwner(BLOB_OWNER_TYPE, item.id());
+    }
+    staging.deleteItems(session.id());
+    if (!staging.transitionSession(
+        session.id(), session.revision(),
+        Set.of(StagingDao.SESSION_OPEN, StagingDao.SESSION_FROZEN,
+            StagingDao.SESSION_PREFLIGHTED, StagingDao.SESSION_FAILED),
+        StagingDao.SESSION_CANCELLED, null, Instant.now(), null)) {
+      return false;
+    }
+    if (credentials != null) credentials.revoke(session);
+    audit(null, null, "staging-expire", session, "expired", Map.of());
+    return true;
+  }
+
   @Transactional(readOnly = true)
   public StagingSessionView get(long sessionId, PermissionSubject actor) {
     StagingSessionRecord session = findSession(sessionId);
