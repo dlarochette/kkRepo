@@ -6,6 +6,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.InputStream;
 import java.util.Map;
 import java.util.Optional;
@@ -37,8 +38,34 @@ public interface StagingContentAdapter {
       String actor,
       String ip);
 
+  /**
+   * Request-aware staging hook for multipart publication endpoints. Returning empty falls back to
+   * {@link #stage}.
+   */
+  default Optional<StagedUpload> stageRequest(
+      RepositoryRuntime runtime,
+      String requestedPath,
+      HttpServletRequest request,
+      String actor,
+      String ip) {
+    return Optional.empty();
+  }
+
   /** Removes live content during promotion; returns false when the path was already absent. */
   boolean delete(RepositoryRuntime runtime, String path);
+
+  /**
+   * Replays the format's normal publication path during promotion. Returning empty falls back to
+   * the generic component-projection promotion.
+   */
+  default Optional<String> promote(
+      RepositoryRuntime runtime,
+      StagingItemRecord item,
+      StagingBlobSource source,
+      String actor,
+      String ip) {
+    return Optional.empty();
+  }
 
   /**
    * Format-specific preflight rule. Return a human-readable conflict, or {@code null} to allow the

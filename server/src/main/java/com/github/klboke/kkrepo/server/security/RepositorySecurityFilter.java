@@ -68,6 +68,7 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
   private static final ComposerPathParser COMPOSER_PATH_PARSER = new ComposerPathParser();
   private static final TerraformPathParser TERRAFORM_PATH_PARSER = new TerraformPathParser();
   private final SecurityAuthenticationService authenticationService;
+  private com.github.klboke.kkrepo.server.staging.StagingCredentialService stagingCredentials;
   private final AccessDecisionService accessDecisionService;
   private final RepositoryRuntimeRegistry repositoryRegistry;
   private final AssetDao assetDao;
@@ -117,6 +118,12 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     this(authenticationService, accessDecisionService,
         new RepositoryRuntimeRegistry(repositoryDao, 0), assetDao, terraformRegistryDao,
         forwardedHeaderPolicy, legacyUi);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setStagingCredentialService(
+      com.github.klboke.kkrepo.server.staging.StagingCredentialService stagingCredentials) {
+    this.stagingCredentials = stagingCredentials;
   }
 
   @Override
@@ -235,6 +242,9 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       }
     }
     request.setAttribute(AuthenticatedSubject.REQUEST_ATTRIBUTE, authenticated.get());
+    if (stagingCredentials != null) {
+      stagingCredentials.bind(request, authenticated.get());
+    }
 
     AccessDecision decision = decide(authenticated.get(), repository.get(), target);
     if (!decision.allowed()) {

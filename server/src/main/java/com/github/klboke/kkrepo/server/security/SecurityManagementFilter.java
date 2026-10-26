@@ -106,7 +106,8 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
     if (uri.startsWith("/internal/blob-stores")) {
       return internalBlobStorePermission(method, uri);
     }
-    if (uri.equals("/internal/staging") || uri.startsWith("/internal/staging/")) {
+    if (uri.equals("/internal/staging") || uri.startsWith("/internal/staging/")
+        || uri.equals("/service/rest/v1/staging") || uri.startsWith("/service/rest/v1/staging/")) {
       return stagingPermission(method, uri);
     }
     if (uri.equals("/internal/ui-settings")) {
