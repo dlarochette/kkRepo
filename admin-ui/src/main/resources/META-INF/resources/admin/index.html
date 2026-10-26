@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/browse/assets/ui-scrollbars.css?v=20260826-shared-scrollbars-4">
     <link rel="stylesheet" href="/browse/assets/format-icons.css?v=20261009-gitlfs-2">
     <link rel="stylesheet" href="/browse/assets/lucide-icons.css?v=20260818-user-round-1">
-    <link rel="stylesheet" href="./assets/admin.css?v=20261024-current-findings-1">
+    <link rel="stylesheet" href="./assets/admin.css?v=20261026-routing-rules-2">
     <link rel="stylesheet" href="/browse/assets/account-menu.css?v=20260824-ui-themes-3">
     <link rel="stylesheet" href="/browse/assets/global-component-search.css?v=20260819-topbar-control-height-1">
     <link rel="stylesheet" href="/login/assets/delete-confirmation.css?v=20261013-delete-confirmation-1">
@@ -86,6 +86,7 @@
           <div class="side-group-items" id="side-group-repository-items" data-side-group-items="repository">
             <button class="side-item" data-view="repositories" type="button"><span class="side-item-icon lucide-icon icon-package" aria-hidden="true"></span><span>Repositories</span></button>
             <button class="side-item" data-view="cleanup-policies" type="button"><span class="side-item-icon lucide-icon icon-archive" aria-hidden="true"></span><span>Cleanup Policies</span></button>
+            <button class="side-item" data-view="routing-rules" type="button"><span class="side-item-icon lucide-icon icon-list-filter" aria-hidden="true"></span><span>Routing Rules</span></button>
             <button class="side-item" data-view="content-selectors" type="button"><span class="side-item-icon lucide-icon icon-list-filter" aria-hidden="true"></span><span>Content Selectors</span></button>
             <button class="side-item" data-view="blobstores" type="button"><span class="side-item-icon lucide-icon icon-database" aria-hidden="true"></span><span>Blob Stores</span></button>
             <button class="side-item" data-view="docker-registry" type="button"><span class="side-item-icon lucide-icon icon-container" aria-hidden="true"></span><span>Docker Registry</span></button>
@@ -244,6 +245,7 @@
             </fieldset>
             <fieldset class="form-grid" id="repository-proxy-fields" hidden>
               <legend>Proxy settings</legend>
+              <label class="full-width"><span>Routing Rule</span><select id="repository-routing-rule"><option value="">None</option></select><span id="repository-routing-rule-status" role="status"></span></label>
               <p class="form-note full-width" id="repository-swift-proxy-note" hidden>
                 Swift proxy follows the Nexus-compatible GitHub source mode. The remote is fixed to
                 https://github.com/; use the username/token fields for private GitHub repositories.
@@ -648,6 +650,41 @@
           </div>
         </section>
 
+        <section class="view fixed-table-view" id="routing-rules-view">
+          <div class="page-heading"><span class="heading-icon"><span class="lucide-icon icon-list-filter" aria-hidden="true"></span></span><h1>Routing Rules</h1><span class="heading-copy">Control which paths proxy repositories can serve</span></div>
+          <div class="action-bar">
+            <button class="create-button" id="routing-rule-create" type="button">Create rule</button>
+            <button class="create-button secondary" id="routing-rule-refresh" type="button">Refresh</button>
+            <label class="filter-box"><input id="routing-rule-filter" type="search" placeholder="Filter routing rules" aria-label="Filter routing rules"></label>
+          </div>
+          <p class="form-note">Assign a rule in a proxy repository’s settings. Rules also apply to cached content and requests through groups.</p>
+          <p id="routing-rule-status" role="status" aria-live="polite"></p>
+          <div class="nx-table-frame fixed-table-frame"><table class="nx-table"><thead><tr><th>Name</th><th>Mode</th><th>Matchers</th><th>Description</th><th class="actions-column">Actions</th></tr></thead><tbody id="routing-rule-table"></tbody></table></div>
+          <div class="form-modal" id="routing-rule-form-modal" data-form-id="routing-rule-form" role="dialog" aria-modal="true" aria-labelledby="routing-rule-form-title" hidden>
+            <div class="form-modal-backdrop" data-modal-dismiss="routing-rule-form"></div>
+            <div class="form-modal-panel">
+              <button class="form-modal-close" data-modal-dismiss="routing-rule-form" type="button" aria-label="Close dialog"><span class="lucide-icon icon-x" aria-hidden="true"></span></button>
+              <form class="blobstore-form modal-form" id="routing-rule-form" hidden>
+                <div class="form-title" id="routing-rule-form-title">Create routing rule</div>
+                <div class="form-grid">
+                  <label><span>Name <span class="required-mark">*</span></span><input id="routing-rule-name" required maxlength="200" pattern="[a-zA-Z0-9\-][a-zA-Z0-9_.\-]*"></label>
+                  <label><span>Mode</span><select id="routing-rule-mode"><option value="BLOCK">Block matching paths</option><option value="ALLOW">Allow only matching paths</option></select></label>
+                  <label class="full-width"><span>Description</span><input id="routing-rule-description" maxlength="1024"></label>
+                  <label class="full-width"><span>Matchers <span class="required-mark">*</span></span><textarea id="routing-rule-matchers" rows="5" required spellcheck="false" placeholder="/com/company/.*" aria-describedby="routing-rule-syntax"></textarea></label>
+                </div>
+                <p class="form-note" id="routing-rule-syntax">One Java regular expression per line. Match the entire path, starting with /. Any matching expression activates the rule. Query parameters are included.</p>
+                <p class="form-note" id="routing-rule-used-by"></p>
+                <fieldset class="form-grid"><legend>Test a path</legend>
+                  <label class="full-width"><span>Repository-relative path</span><input id="routing-rule-test-path" placeholder="/com/company/app/1.0/app-1.0.jar" spellcheck="false"></label>
+                  <div class="form-actions full-width"><button class="create-button secondary" id="routing-rule-preview" type="button">Test path</button></div>
+                </fieldset>
+                <p id="routing-rule-preview-status" role="status" aria-live="polite"></p>
+                <p id="routing-rule-error" role="alert"></p>
+                <div class="form-actions"><button class="create-button" id="routing-rule-save" type="submit">Save rule</button><button class="create-button secondary" type="button" data-modal-dismiss="routing-rule-form">Cancel</button></div>
+              </form>
+            </div>
+          </div>
+        </section>
         <section class="view fixed-table-view" id="content-selectors-view">
           <div class="page-heading">
             <span class="heading-icon"><span class="lucide-icon icon-list-filter" aria-hidden="true"></span></span>
@@ -1988,12 +2025,13 @@
     <script src="/login/assets/csrf-fetch.js?v=20261006-shared-primitives-1"></script>
     <script src="/login/assets/account-menu.js?v=20261006-shared-primitives-1"></script>
     <script src="/login/assets/safe-return-to.js?v=20261023-safe-return-to-1"></script>
-    <script src="/login/assets/ui-i18n.js?v=20261024-current-findings-1"></script>
+    <script src="/login/assets/ui-i18n.js?v=20261026-routing-rules-2"></script>
     <script src="/login/assets/delete-confirmation.js?v=20261013-delete-confirmation-1"></script>
     <script src="/login/assets/product-update.js?v=20260819-version-update-1"></script>
     <script src="./assets/admin-filter.js?v=20260706-wildcard-filter-1"></script>
     <script src="/browse/assets/global-component-search.js?v=20260817-global-search-2"></script>
+    <script src="./assets/routing-rules.js?v=20261026-routing-rules-2"></script>
     <script src="./assets/content-selectors.js?v=20261013-delete-confirmation-1"></script>
-    <script src="./assets/admin.js?v=20261024-current-findings-1"></script>
+    <script src="./assets/admin.js?v=20261026-routing-rules-2"></script>
   </body>
 </html>

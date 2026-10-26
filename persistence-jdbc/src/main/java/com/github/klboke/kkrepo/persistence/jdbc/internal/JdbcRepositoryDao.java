@@ -138,6 +138,12 @@ public class JdbcRepositoryDao implements com.github.klboke.kkrepo.persistence.j
   }
 
   @Override
+  public Optional<RepositoryRecord> lockByName(String name) {
+    return jdbcTemplate.query("SELECT * FROM repository WHERE name = ? FOR UPDATE", rowMapper, name)
+        .stream().findFirst();
+  }
+
+  @Override
   public Optional<Instant> findUpdatedAt(long id) {
     return jdbcTemplate.query(
         "SELECT updated_at FROM repository WHERE id = ?",

@@ -166,6 +166,7 @@ const viewHashRoutes = {
   repositories: "#admin/repository/repositories",
   "cleanup-policies": CLEANUP_ROUTE_BASE,
   "content-selectors": "#admin/repository/content-selectors",
+  "routing-rules": "#admin/repository/routingrules",
   blobstores: "#admin/repository/blobstores",
   "docker-registry": "#admin/repository/docker",
   "security-users": "#admin/security/users",
@@ -190,6 +191,7 @@ const hashViewRoutes = {
   "#admin/repository/cleanup-policies": "cleanup-policies",
   "#admin/repository/cleanup": "cleanup-policies",
   "#admin/repository/content-selectors": "content-selectors",
+  "#admin/repository/routingrules": "routing-rules",
   "#admin/repository/blobstores": "blobstores",
   "#admin/repository/blob-stores": "blobstores",
   "#admin/repository/docker": "docker-registry",
@@ -3136,6 +3138,9 @@ function repositoryFormPayload() {
     const minimumReleaseAge = document.getElementById("repository-minimum-release-age").value;
     const allowedRedirectHosts = document.getElementById("repository-allowed-redirect-hosts").value
       .split(",").map((value) => value.trim()).filter(Boolean);
+    if (!document.getElementById("repository-routing-rule").disabled) {
+      payload.routingRuleName = document.getElementById("repository-routing-rule").value;
+    }
     payload.proxy = {
       remoteUrl: document.getElementById("repository-remote-url").value.trim(),
       allowedRedirectHosts,
@@ -3317,6 +3322,7 @@ function showCreateRepositoryForm() {
   repositoryFormMode = "create";
   editingRepositoryName = null;
   editingRepositoryBlobStoreName = null;
+  window.KkRoutingRules.loadOptions();
   document.getElementById("repository-form-title").textContent = "Create repository";
   document.getElementById("save-repository-button").textContent = "Create repository";
   document.getElementById("repository-name").disabled = false;
@@ -3341,6 +3347,7 @@ function showEditRepositoryForm(name) {
   }
   repositoryFormMode = "edit";
   editingRepositoryName = repo.name;
+  window.KkRoutingRules.loadOptions(repo.routingRuleName || "");
   editingRepositoryBlobStoreName = repo.blobStoreName || null;
   document.getElementById("repository-form-title").textContent = `Edit repository: ${repo.name}`;
   document.getElementById("save-repository-button").textContent = "Save changes";
@@ -4905,6 +4912,7 @@ function renderMigrationResult(payload, title) {
   const blobStorePlans = preflight.blobStorePlans || [];
   const repositoriesToMigrate = preflight.repositoriesToMigrate || [];
   const groupRepositories = preflight.groupRepositories || [];
+  const routingRules = preflight.routingRules || {};
   const unsupported = preflight.unsupported || [];
   const proxyRisks = preflight.proxyRemoteRisks || [];
   const sourceProfile = preflight.sourceProfile || payload.sourceProfile || null;
@@ -4934,6 +4942,18 @@ function renderMigrationResult(payload, title) {
     ${renderMigrationPlan(migrationPlan)}
     ${renderMigrationPlanItems(migrationPlan)}
     ${renderMigrationList("Warnings", warnings)}
+    ${renderMigrationList("Routing rule migration blockers", routingRules.errors || [])}
+    ${renderMigrationSection("Routing Rules", renderCompactTable([
+      { label: "Name", value: (rule) => rule.name },
+      { label: "Mode", value: (rule) => rule.mode },
+      { label: "Matchers", value: (rule) => (rule.matchers || []).join("\n") },
+      { label: "Description", value: (rule) => rule.description }
+    ], routingRules.rules || [], "No routing rules found."))}
+    ${renderMigrationSection("Routing rule bindings", renderCompactTable([
+      { label: "Repository", value: (binding) => binding.repository },
+      { label: "Routing Rule", value: (binding) => binding.rule }
+    ], routingRules.bindings || []))}
+    ${routingRules.checksum ? renderMigrationSection("Routing policy checksum", renderMigrationHash(routingRules.checksum)) : ""}
     ${renderMigrationSection("Blob stores", renderCompactTable([
       { label: "Source", value: (store) => store.sourceName || "" },
       { label: "Source type", value: (store) => store.sourceType || "" },
@@ -8170,6 +8190,7 @@ function switchView(view, options = {}) {
     loadCleanupPolicies();
   }
   if (view === "content-selectors") window.KkContentSelectors.load();
+  if (view === "routing-rules") window.KkRoutingRules.load();
   if (view === "docker-registry") loadDockerOperations();
   if (view === "security-users") loadSecurityUsers();
   if (view === "security-roles") loadSecurityRoles();

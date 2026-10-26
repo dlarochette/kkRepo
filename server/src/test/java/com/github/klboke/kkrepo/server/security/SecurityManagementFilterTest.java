@@ -29,6 +29,10 @@ class SecurityManagementFilterTest {
   @ParameterizedTest
   @CsvSource({
       "/service/rest/v1/%73ecurity/users, nexus:users:read",
+      "/service/rest/v1/routing-rules, nexus:*",
+      "/service/rest/v1/%72outing-rules/rule, nexus:*",
+      "/service/rest/v1/routing-rules;x/rule, nexus:*",
+      "/internal/routing-rules/preview, nexus:*",
       "/service;x/rest;y/v1;z/security;w/users;q, nexus:users:read",
       "/internal/%73ecurity/ldap, nexus:ldap:read",
       "/%69nternal/security/ldap, nexus:ldap:read",

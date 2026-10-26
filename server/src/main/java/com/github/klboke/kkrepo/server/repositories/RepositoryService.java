@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.repositories;
 
+import com.github.klboke.kkrepo.server.routingrules.RoutingRuleService;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryRecipe;
 import com.github.klboke.kkrepo.core.RepositoryRecipes;
@@ -81,6 +82,13 @@ public class RepositoryService {
   private static final Set<String> MAVEN_LAYOUT_POLICIES = Set.of("STRICT", "PERMISSIVE");
   private static final Set<String> RAW_CONTENT_DISPOSITIONS = Set.of("INLINE", "ATTACHMENT");
   private static final int MAX_PROXY_REDIRECT_HOSTS = 64;
+
+  private RoutingRuleService routingRules;
+
+  @Autowired
+  void setRoutingRules(RoutingRuleService routingRules) {
+    this.routingRules = routingRules;
+  }
 
   private final RepositoryDao repositoryDao;
   private final BlobStoreDao blobStoreDao;
@@ -363,7 +371,8 @@ public class RepositoryService {
 
     RepositoryRecord toInsert = new RepositoryRecord(
         null, name, recipe.format(), recipe.type(), recipe.name(), online,
-        blobStoreId, null, proxyRemoteUrl, versionPolicy, layoutPolicy, writePolicy,
+        blobStoreId, routingRules == null ? null : routingRules.binding(recipe.type(), command.routingRuleName(), null),
+        proxyRemoteUrl, versionPolicy, layoutPolicy, writePolicy,
         strict, attributes);
     long id = repositoryDao.insert(toInsert);
 
@@ -501,7 +510,8 @@ public class RepositoryService {
 
     RepositoryRecord toUpdate = new RepositoryRecord(
         existing.id(), existing.name(), existing.format(), existing.type(), existing.recipeName(),
-        online, blobStoreId, existing.routingRuleId(), proxyRemoteUrl,
+        online, blobStoreId, routingRules == null ? existing.routingRuleId()
+            : routingRules.binding(recipe.type(), command.routingRuleName(), existing.routingRuleId()), proxyRemoteUrl,
         versionPolicy, layoutPolicy, writePolicy, strict, attributes);
     repositoryDao.update(toUpdate);
     if (rebuildYumMetadata && indexRebuildDao != null) {
@@ -1225,7 +1235,8 @@ public class RepositoryService {
         record.format() == RepositoryFormat.YUM && record.type() == RepositoryType.HOSTED
             ? new YumSettings(YumMetadataDepth.read(record.attributes())) : null,
         record.format() == RepositoryFormat.CONAN && record.type() != RepositoryType.GROUP
-            ? ConanManifestPolicy.read(record.attributes()) : null);
+            ? ConanManifestPolicy.read(record.attributes()) : null,
+        routingRules == null ? null : routingRules.name(record.routingRuleId()));
   }
 
   private Map<Long, String> blobStoreNameIndex() {

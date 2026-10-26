@@ -79,6 +79,17 @@ class RServiceTest {
   }
 
   @Test
+  void refusesSnapshotPublishedForAnotherMemberProjection() {
+    RepositoryRuntime group = runtime(3L, RepositoryType.GROUP, "ALLOW", List.of());
+    when(published.find(group.id(), "src/contrib")).thenReturn(Optional.of(snapshot(group.id(), 1L,
+        Map.of("src/contrib/PACKAGES.gz", ".r/denied", "@members", "another-projection"))));
+    var failure = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+        () -> service.get(group, "src/contrib/PACKAGES.gz", false));
+    assertEquals(503, failure.getStatusCode().value());
+    verify(assets, never()).serve(eq(group), anyString(), anyBoolean());
+  }
+
+  @Test
   void publishesSourcePackageIdempotentlyAndRejectsCoordinateDrift() throws Exception {
     byte[] fixture = RTestPackage.source("demo", "1.0.0");
 

@@ -13,6 +13,9 @@ public interface RepositoryDao {
 
   Optional<RepositoryRecord> findByName(String name);
 
+  /** Lock an existing configuration row until the caller's transaction commits. */
+  Optional<RepositoryRecord> lockByName(String name);
+
   /** Durable repository configuration timestamp used to fence pre-configuration cache entries. */
   Optional<Instant> findUpdatedAt(long id);
 

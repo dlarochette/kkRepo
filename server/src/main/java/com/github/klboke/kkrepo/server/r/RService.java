@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.r;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.persistence.jdbc.api.PersistenceHashes;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RRegistryDao;
@@ -324,8 +325,11 @@ public class RService {
     // Package bytes are pinned by the group binding created with the published index. Do not
     // contact an upstream proxy again here: the next PACKAGES.gz request refreshes the projection,
     // while this immutable download continues to resolve against one coherent snapshot.
-    RRegistryDao.Snapshot snapshot = publishedSnapshots.find(runtime.id(), SOURCE_NAMESPACE)
-        .orElseGet(() -> ensureGroupSnapshot(runtime, SOURCE_NAMESPACE));
+    RRegistryDao.Snapshot snapshot =
+        RepositoryRoutingPolicy.filtersGroup(runtime.id())
+            ? ensureGroupSnapshot(runtime, SOURCE_NAMESPACE)
+            : publishedSnapshots.find(runtime.id(), SOURCE_NAMESPACE)
+                .orElseGet(() -> ensureGroupSnapshot(runtime, SOURCE_NAMESPACE));
     RRegistryDao.GroupBinding binding = registry.findGroupBinding(
         runtime.id(), SOURCE_NAMESPACE, snapshot.revision(), path.normalized()).orElseThrow(
             () -> new MavenExceptions.MavenNotFoundException(path.normalized()));
@@ -364,15 +368,18 @@ public class RService {
     // Refresh proxy projections before comparing revisions. A repository configuration change or
     // an upstream PACKAGES.gz update can leave the last published proxy revision unchanged until
     // it is observed; comparing that stale revision first would incorrectly reuse the group index.
-    String fingerprint = resolveGroup(runtime, namespace).memberFingerprint();
-    RRegistryDao.Snapshot current = publishedSnapshots.find(runtime.id(), namespace).orElse(null);
-    if (current == null || !fingerprint.equals(current.manifest().get("@members"))) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+      String fingerprint = resolveGroup(runtime, namespace).memberFingerprint();
+      RRegistryDao.Snapshot current = publishedSnapshots.find(runtime.id(), namespace).orElse(null);
+      if (current != null && fingerprint.equals(current.manifest().get("@members"))) return current;
       registry.ensureSuite(runtime.id(), namespace, Instant.now());
       registry.markSuiteDirty(runtime.id(), namespace, Instant.now());
       publishPending(runtime, namespace, true);
     }
-    return publishedSnapshots.find(runtime.id(), namespace).orElseThrow(
-        () -> new MavenExceptions.MavenNotFoundException(namespace + "/PACKAGES.gz"));
+    // Another request may publish a different routing-rule projection to the shared slot.
+    // Never return that snapshot: retrying the request is safer than serving denied members.
+    throw new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "Group snapshot changed concurrently");
   }
 
   private boolean publishPending(

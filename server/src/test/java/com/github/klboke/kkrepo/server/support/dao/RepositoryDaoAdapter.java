@@ -9,6 +9,9 @@ import java.util.Optional;
 
 /** Test-only base class for focused RepositoryDao fakes. */
 public class RepositoryDaoAdapter implements RepositoryDao {
+  @Override
+  public Optional<RepositoryRecord> lockByName(String name) { return findByName(name); }
+
   public RepositoryDaoAdapter() {
   }
 

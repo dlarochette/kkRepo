@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.maven;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.core.BlobReference;
 import com.github.klboke.kkrepo.core.BlobStorage;
 import com.github.klboke.kkrepo.persistence.jdbc.api.AssetDao;
@@ -176,6 +177,9 @@ public class MavenGroupService {
     if (cacheController != null && cacheInfo.isPresent()) {
       return !cacheController.isStale(group.id(), NexusCacheType.CONTENT, cacheInfo.get(), ttl, now);
     }
+    if (RepositoryRoutingPolicy.filtersGroup(group.id())) {
+      return false; // Legacy group cache entries lack a policy-scoped generation.
+    }
     if (snapshot.lastUpdatedAt() == null) {
       return false;
     }
@@ -262,6 +266,9 @@ public class MavenGroupService {
     Optional<NexusLikeCacheInfo> cacheInfo = NexusLikeCacheInfo.fromAttributes(snapshot.attributes());
     if (cacheController != null && cacheInfo.isPresent()) {
       return !cacheController.isStale(group.id(), NexusCacheType.METADATA, cacheInfo.get(), ttl, now);
+    }
+    if (RepositoryRoutingPolicy.filtersGroup(group.id())) {
+      return false; // Legacy group cache entries lack a policy-scoped generation.
     }
     if (snapshot.lastUpdatedAt() == null) {
       return false;
