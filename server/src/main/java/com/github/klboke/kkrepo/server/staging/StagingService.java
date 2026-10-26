@@ -172,6 +172,17 @@ public class StagingService {
     if (!expiresAt.isAfter(now)) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Staging expiry must be in the future");
     }
+    Map<String, Object> sessionAttributes = new LinkedHashMap<>();
+    if (request.attributes() != null) {
+      request.attributes().forEach((key, value) -> {
+        if (key != null && value != null && !isReservedAttribute(key)) {
+          sessionAttributes.put(key, value);
+        }
+      });
+    }
+    if (Boolean.TRUE.equals(request.approvalRequired())) {
+      sessionAttributes.put("approvalRequired", true);
+    }
     long id = staging.insertSession(new StagingSessionRecord(
         null,
         name,
@@ -185,7 +196,7 @@ public class StagingService {
         null,
         expiresAt,
         null,
-        request.attributes() == null ? Map.of() : request.attributes()));
+        Map.copyOf(sessionAttributes)));
     for (RepositoryRecord target : targets) {
       staging.addRepository(id, target.id(), target.format().id());
     }
@@ -290,6 +301,10 @@ public class StagingService {
     Map<String, Object> attributes = request == null || request.attributes() == null
         ? session.attributes()
         : request.attributes();
+    if (attributes.keySet().stream().anyMatch(StagingService::isReservedAttribute)) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Approval attributes are managed by the approve endpoint");
+    }
     if (expiresAt != null && !expiresAt.isAfter(Instant.now())) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Staging expiry must be in the future");
     }
@@ -360,6 +375,34 @@ public class StagingService {
         .filter(session -> admin || owns(session, actor))
         .map(this::view)
         .toList();
+  }
+
+  @Transactional
+  public StagingSessionView approve(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord session = staging.lockSession(sessionId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Staging session not found"));
+    if (java.util.Objects.equals(session.ownerUserId(), actorUserId(actor))) {
+      throw new ResponseStatusException(
+          HttpStatus.FORBIDDEN, "The session owner cannot approve their own release");
+    }
+    if (!Set.of(StagingDao.SESSION_OPEN, StagingDao.SESSION_FROZEN,
+        StagingDao.SESSION_PREFLIGHTED).contains(session.state())) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Staging session cannot be approved from " + session.state());
+    }
+    Map<String, Object> attributes = new LinkedHashMap<>(session.attributes());
+    attributes.put("approvedBySource", actorSource(actor));
+    attributes.put("approvedByUserId", actorUserId(actor));
+    attributes.put("approvedAt", Instant.now().toString());
+    if (!staging.updateSessionMetadata(
+        session.id(), session.revision(), session.expiresAt(), attributes)) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
+    }
+    audit(actor, remoteAddr, "staging-approve", session, "approved", Map.of());
+    return view(staging.findSessionById(session.id()).orElseThrow());
   }
 
   @Transactional(readOnly = true)
@@ -481,6 +524,7 @@ public class StagingService {
       long sessionId, PermissionSubject actor, String remoteAddr) {
     StagingSessionRecord session = lockOwnedSession(sessionId, actor);
     requireNotExpired(session);
+    requireApproved(session);
     if (!session.state().equals(StagingDao.SESSION_PREFLIGHTED)) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT,
@@ -1421,6 +1465,24 @@ public class StagingService {
     return sha256Hex(manifest.toString());
   }
 
+  private static void requireApproved(StagingSessionRecord session) {
+    if (!Boolean.TRUE.equals(session.attributes().get("approvalRequired"))) {
+      return;
+    }
+    Object approver = session.attributes().get("approvedByUserId");
+    if (approver == null || String.valueOf(approver).isBlank()
+        || java.util.Objects.equals(String.valueOf(approver), session.ownerUserId())) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Staging session requires approval by another user");
+    }
+  }
+
+  private static boolean isReservedAttribute(String key) {
+    return "approvedBySource".equals(key)
+        || "approvedByUserId".equals(key)
+        || "approvedAt".equals(key);
+  }
+
   private static String sha256Hex(String value) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -1504,7 +1566,8 @@ public class StagingService {
       List<String> repositories,
       Instant expiresAt,
       Integer retentionDays,
-      Map<String, Object> attributes) {
+      Map<String, Object> attributes,
+      Boolean approvalRequired) {
   }
 
   public record UpdateSessionRequest(Instant expiresAt, Map<String, Object> attributes) {
