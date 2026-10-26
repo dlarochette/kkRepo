@@ -2,7 +2,7 @@ package com.github.klboke.kkrepo.server.routing.builtin;
 
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
-import com.github.klboke.kkrepo.server.staging.StagingService;
+import com.github.klboke.kkrepo.server.staging.StagingHttpSupport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
@@ -179,7 +179,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   private final RawHostedService rawHosted;
   private final RawProxyService rawProxy;
   private final RawGroupService rawGroup;
-  private StagingService staging;
+  private StagingHttpSupport stagingHttp;
   private final ObjectMapper objectMapper;
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
   private final MavenPathParser parser = new MavenPathParser();
@@ -242,8 +242,8 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   }
 
   @Autowired(required = false)
-  public void setStagingService(StagingService staging) {
-    this.staging = staging;
+  public void setStagingHttpSupport(StagingHttpSupport stagingHttp) {
+    this.stagingHttp = stagingHttp;
   }
 
   @Autowired
@@ -387,34 +387,11 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest request)
       throws IOException, ServletException {
-    String stagingSession = request.servletRequest().getHeader(StagingService.HEADER);
-    if (staging != null && stagingSession != null && !stagingSession.isBlank()) {
-      String sessionKey = stagingSession.trim();
-      switch (request.method().name()) {
-        case "GET", "HEAD" -> {
-          boolean headOnly = request.method().name().equals("HEAD");
-          Optional<MavenResponse> staged = staging.getStagedContent(
-              request.runtime(), sessionKey, request.path(), headOnly,
-              requestPermissionSubject(request.servletRequest()));
-          if (staged.isPresent()) {
-            return headOnly
-                ? toHeadResponse(staged.get(), request.servletRequest())
-                : toStreamingResponse(staged.get(), request.servletRequest());
-          }
-        }
-        case "PUT", "DELETE" -> {
-          return handleStaged(request, sessionKey);
-        }
-        case "POST" -> {
-          if (staging.supportsPublication(request.runtime().format(), request.path())) {
-            return handleStaged(request, sessionKey);
-          }
-          throw new MavenExceptions.MethodNotAllowed(
-              "Staging does not support POST for " + request.runtime().format().id()
-                  + " repositories at " + request.path());
-        }
-        default -> throw new MavenExceptions.MethodNotAllowed(
-            "Staging does not support " + request.method() + " on repository content");
+    if (stagingHttp != null) {
+      Optional<ResponseEntity<?>> staged = stagingHttp.dispatch(
+          request.runtime(), request.path(), request.servletRequest());
+      if (staged.isPresent()) {
+        return staged.get();
       }
     }
     return switch (request.method().name()) {
@@ -428,33 +405,6 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
           request.runtime(), request.repositoryName(), request.servletRequest());
       default -> throw new MavenExceptions.MethodNotAllowed(
           "Unsupported repository HTTP method: " + request.method());
-    };
-  }
-
-  private ResponseEntity<?> handleStaged(
-      RepositoryProtocolRequest request, String sessionKey) throws IOException {
-    RepositoryRuntime runtime = request.runtime();
-    String path = request.path();
-    return switch (request.method().name()) {
-      case "PUT", "POST" -> {
-        try (InputStream body = request.servletRequest().getInputStream()) {
-          StagingService.StagingWriteResult result = staging.putRaw(
-              runtime, sessionKey, path, body, request.contentType(),
-              requestPermissionSubject(request.servletRequest()), requestUserId(request.servletRequest()));
-          yield ResponseEntity.status(HttpStatus.CREATED)
-              .header(StagingService.HEADER, String.valueOf(result.sessionId()))
-              .header("X-KkRepo-Staging-Action", result.action())
-              .build();
-        }
-      }
-      case "DELETE" -> {
-        int deleted = staging.deleteRaw(
-            runtime, sessionKey, path,
-            requestPermissionSubject(request.servletRequest()), requestUserId(request.servletRequest()));
-        yield ResponseEntity.status(deleted == 0 ? HttpStatus.NOT_FOUND : HttpStatus.NO_CONTENT).build();
-      }
-      default -> throw new MavenExceptions.MethodNotAllowed(
-          "Staging does not support " + request.method() + " on repository content");
     };
   }
 

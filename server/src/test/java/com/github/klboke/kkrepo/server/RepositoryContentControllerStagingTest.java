@@ -20,6 +20,7 @@ import com.github.klboke.kkrepo.server.raw.RawHostedService;
 import com.github.klboke.kkrepo.server.raw.RawProxyService;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
 import com.github.klboke.kkrepo.server.security.ForwardedHeaderPolicy;
+import com.github.klboke.kkrepo.server.staging.StagingHttpSupport;
 import com.github.klboke.kkrepo.server.staging.StagingService;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -122,7 +123,7 @@ class RepositoryContentControllerStagingTest {
             new ObjectMapper(),
             new ForwardedHeaderPolicy(""),
             null);
-    controller.setStagingService(staging);
+    controller.setStagingHttpSupport(new StagingHttpSupport(staging));
     return controller;
   }
 }
