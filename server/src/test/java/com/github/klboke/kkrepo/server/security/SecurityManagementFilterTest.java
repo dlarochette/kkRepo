@@ -57,6 +57,7 @@ class SecurityManagementFilterTest {
       "PATCH,/internal/staging/sessions/1,nexus:staging:create",
       "POST,/internal/staging/sessions/1/preflight,nexus:staging:promote",
       "POST,/internal/staging/sessions/1/promote,nexus:staging:promote",
+      "POST,/internal/staging/sessions/1/approve,nexus:staging:promote",
       "DELETE,/internal/staging/sessions/1/repositories/2,nexus:staging:admin"
   })
   void stagingPathsRequireTheirMappedPermission(

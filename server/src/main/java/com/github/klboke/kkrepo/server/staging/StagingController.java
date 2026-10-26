@@ -156,6 +156,12 @@ public class StagingController {
     return ResponseEntity.noContent().build();
   }
 
+  @PostMapping("/sessions/{id}/approve")
+  public StagingService.StagingSessionView approve(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    return staging.approve(id, subject(servlet), ClientAddress.from(servlet));
+  }
+
   @PostMapping("/sessions/{id}/preflight")
   public StagingService.StagingReport preflight(
       @PathVariable("id") long id, HttpServletRequest servlet) {
