@@ -37,35 +37,26 @@ public class RepositoryRoutingPolicy {
   private final RoutingRuleDao rules;
   public RepositoryRoutingPolicy(RoutingRuleDao rules) { this.rules = rules; }
 
-  /** Extract the raw relative path before protocol-specific decoding and normalization. */
+  /** Interpret the whole MVC path before locating the repository boundary. */
   public RepositoryRuntime prepareRepository(RepositoryRuntime runtime, HttpServletRequest request) {
-    String uri = request.getRequestURI();
-    String prefix = request.getContextPath() + RepositoryUrlPrefix.path(request);
+    if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
+    String uri = matchingPath(request.getRequestURI());
+    String prefix = matchingPath(request.getContextPath() + RepositoryUrlPrefix.path(request));
+    if (!uri.startsWith(prefix)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid repository path");
     int separator = uri.indexOf('/', prefix.length());
-    return prepare(runtime, separator < 0 ? "/" : uri.substring(separator), request);
+    return prepareMatchedPath(runtime, separator < 0 ? "/" : uri.substring(separator), request);
   }
 
   public RepositoryRuntime prepare(RepositoryRuntime runtime, String path, HttpServletRequest request) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
+    return prepareMatchedPath(runtime, matchingPath(path), request);
+  }
+
+  private RepositoryRuntime prepareMatchedPath(RepositoryRuntime runtime, String path, HttpServletRequest request) {
     if (!(request.getAttribute(CONTEXT) instanceof Context)) {
       Map<Long, Rule> bindings = new HashMap<>();
       rules.bindings().forEach(binding -> bindings.put(binding.repositoryId(), binding.rule()));
-      String decoded;
-      try {
-        // Retain strict percent/UTF-8 validation, then use MVC's segment interpretation:
-        // literal matrix parameters are removed before decoding; encoded semicolons remain data.
-        UriPathDecoder.decodeComponent(path);
-        StringBuilder mvcPath = new StringBuilder();
-        for (PathContainer.Element element : PathContainer.parsePath(path).elements()) {
-          mvcPath.append(element instanceof PathContainer.PathSegment segment
-              ? segment.valueToMatch().replace("/", "%2F") : element.value());
-        }
-        decoded = mvcPath.toString();
-      }
-      catch (IllegalArgumentException invalid) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
-      }
-      StringBuilder matchPath = new StringBuilder(canonicalPath(decoded));
+      StringBuilder matchPath = new StringBuilder(path);
       StringBuilder query = new StringBuilder();
       // Nexus RoutingRuleHandler includes decoded query parameters in matcher input.
       request.getParameterMap().forEach((name, values) -> {
@@ -78,6 +69,22 @@ public class RepositoryRoutingPolicy {
       request.setAttribute(CONTEXT, new Context(matchPath.toString(), bindings));
     }
     return project(runtime, (Context) request.getAttribute(CONTEXT));
+  }
+
+  private static String matchingPath(String raw) {
+    try {
+      // Validate raw bytes without re-decoding MVC's output. Matrix parameters are
+      // removed before decoding; encoded semicolons and separators remain segment data.
+      UriPathDecoder.decodeComponent(raw);
+      StringBuilder mvcPath = new StringBuilder();
+      for (PathContainer.Element element : PathContainer.parsePath(raw).elements()) {
+        mvcPath.append(element instanceof PathContainer.PathSegment segment
+            ? segment.valueToMatch().replace("/", "%2F") : element.value());
+      }
+      return canonicalPath(mvcPath.toString());
+    } catch (IllegalArgumentException invalid) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
+    }
   }
 
   /** Match the resource identity after the slash and dot normalization used by routing/upstreams. */

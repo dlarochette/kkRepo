@@ -13,6 +13,7 @@ import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.server.routingrules.RoutingRuleErrorAdvice;
 import java.util.List;
 import java.util.Optional;
+import java.net.URI;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -36,9 +37,10 @@ class PypiRoutingRuleTest {
         .addPlaceholderValue("kkrepo.compatibility.repository-url-prefix", "/repository")
         .setControllerAdvice(new RoutingRuleErrorAdvice()).build();
     for (String path : List.of("/repository/p/simple/private/", "/repository/p/simple/private;x=1/",
-        "/repository/p/simple;x=1/private;x=2/")) {
-      assertEquals(403, mvc.perform(get(path)).andReturn().getResponse().getStatus(), path);
-      assertEquals(403, mvc.perform(head(path)).andReturn().getResponse().getStatus(), path);
+        "/repository/p/simple;x=1/private;x=2/", "/repository;x=1/p/simple/private/",
+        "/%72epository/p/simple/private/", "/repository/%70/simple/private/")) {
+      assertEquals(403, mvc.perform(get(URI.create(path))).andReturn().getResponse().getStatus(), path);
+      assertEquals(403, mvc.perform(head(URI.create(path))).andReturn().getResponse().getStatus(), path);
     }
     verifyNoInteractions(proxy);
   }

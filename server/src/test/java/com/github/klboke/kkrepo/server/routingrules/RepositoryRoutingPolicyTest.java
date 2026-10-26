@@ -130,6 +130,20 @@ class RepositoryRoutingPolicyTest {
     assertSame(proxy, policy.prepare(proxy, "/simple/private%253Bx=2/", request()));
   }
 
+  @Test void repositoryBoundaryUsesDecodedMvcSegmentsIncludingCustomPrefixAndContext() {
+    RepositoryRuntime proxy = runtime(1, RepositoryType.PROXY);
+    when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/private/.*")));
+    var request = request();
+    request.setContextPath("/ctx");
+    new com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix("/custom/repos")
+        .onStartup(request.getServletContext());
+    request.setRequestURI("/ctx/custom;x=1/%72epos/%74est;y=2/%70rivate/file");
+    assertThrows(RepositoryRoutingPolicy.Blocked.class, () -> policy.prepareRepository(proxy, request));
+    var opaque = request();
+    opaque.setRequestURI("/repository/test/%2570rivate/file");
+    assertSame(proxy, policy.prepareRepository(proxy, opaque));
+  }
+
   private Binding binding(String mode, String... matchers) {
     return new Binding(1, new Rule(10, "rule", "", mode, List.of(matchers)));
   }
