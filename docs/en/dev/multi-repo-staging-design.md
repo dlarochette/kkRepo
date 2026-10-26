@@ -416,6 +416,21 @@ to upload staged content without being able to publish it.
 | Format adapters | `StagingContentAdapter` SPI; Raw is built in, Arch and Open VSX adapters live on their format branches |
 | Tests | `StagingServiceTest`, persistence contract `stagingSessionsItemsAndPromotionsRoundTripWithRevisionFence` on MySQL and PostgreSQL |
 
+Current format coverage:
+
+| Format | Staging content | Branch |
+| --- | --- | --- |
+| Raw | yes | `feat/multi-repo-staging` |
+| Maven 2 | yes | `feat/staging-maven-npm-pypi-helm` |
+| npm | yes | `feat/staging-maven-npm-pypi-helm` |
+| PyPI | yes | `feat/staging-maven-npm-pypi-helm` |
+| Helm | yes | `feat/staging-maven-npm-pypi-helm` |
+| Arch Linux | yes | `feat/staging-arch` |
+| Open VSX | yes | `feat/staging-openvsx` |
+| Docker / OCI | pending | dedicated branch |
+| Yum, APT, Alpine, R, NuGet, RubyGems, Go, Terraform, Conda, Conan, Cargo, Composer | pending | path/PUT replay branch |
+| Pub, Swift, Ansible, Git LFS, Hugging Face | pending | multipart/session adapters |
+
 Current limitations:
 
 - A repository is accepted only when its format has a `StagingContentAdapter`. Raw is built in;
