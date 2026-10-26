@@ -1148,7 +1148,9 @@ public class StagingService {
     Optional<StagingItemRecord> staged = staging.findItem(
         session.id(), runtime.id(), PersistenceHashes.pathHash(path));
     if (staged.isEmpty()) {
-      return Optional.empty();
+      return adapter == null
+          ? Optional.empty()
+          : adapter.generatedMetadata(runtime, session.id(), rawPath, headOnly);
     }
     StagingItemRecord item = staged.get();
     if (item.action().equals(StagingDao.ITEM_DELETE)) {
