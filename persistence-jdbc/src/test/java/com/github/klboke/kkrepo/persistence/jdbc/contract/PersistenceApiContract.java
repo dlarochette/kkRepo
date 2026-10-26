@@ -430,6 +430,7 @@ public abstract class PersistenceApiContract {
         "spring_session",
         "spring_session_attributes",
         "staging_item",
+        "staging_group_change",
         "staging_promotion",
         "staging_session",
         "staging_session_repository",
