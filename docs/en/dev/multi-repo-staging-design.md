@@ -158,6 +158,45 @@ For formats that materialize generated metadata (Arch database, R index, npm gro
 promotion may record the metadata revision it produced. The metadata itself should remain
 rebuildable from durable rows.
 
+## Session credentials
+
+A session can issue a short-lived `StagingToken` API key that inherits the creator's roles:
+
+- `POST /internal/staging/sessions` returns the first token in the
+  `X-KkRepo-Staging-Token` response header;
+- `POST /internal/staging/sessions/{id}/credential` rotates it;
+- the token's scopes bind every repository request to the session, so clients do not need to send
+  `X-KkRepo-Staging` explicitly;
+- the token expires with the session and is revoked on close, cancel, rollback, or successful
+  promotion;
+- revocation removes the API key from the shared `api_key` table, so every replica observes it;
+- the token does not invent permissions: authorization still evaluates the owner's roles and the
+  repository/action rules.
+
+## Nexus-compatible API surface
+
+The durable staging model is exposed through Nexus-shaped resources:
+
+| Nexus path | Staging adaptation |
+| --- | --- |
+| `GET /service/rest/v1/repositories` | `stagingSession` scopes the list to participating repositories |
+| `GET /service/rest/v1/repositories/{name}` | Same, with a session-scoped 404 when the repository is not a member |
+| `GET /service/rest/v1/assets` | Staged assets when `stagingSession` is present; live assets otherwise |
+| `GET /service/rest/v1/search/assets` | Same, with Nexus `continuationToken` paging |
+| `GET/DELETE /service/rest/v1/assets/{id}` | Opaque staged asset IDs (`sa:...`) or live asset IDs |
+| `GET /service/rest/v1/components` | Staged components grouped by the stored `stagingComponent` projection |
+| `GET /service/rest/v1/components/{id}` | Opaque staged (`sc:...`) or live component IDs |
+| `GET /service/rest/v1/status*` | Nexus-compatible availability/writable probes |
+| `/service/rest/v1/staging/...` | Alias of the staging lifecycle API |
+
+Staged asset download URLs carry `?stagingSession=<id>`, so clients that follow Nexus asset links
+stay in the staged view.
+
+`POST /sessions/{id}/commit` runs preflight and promotion in one call.
+`POST /sessions/{id}/rollback` discards the diff and releases staged blobs.
+`close` remains the explicit freeze stage for clients that want to inspect the preflight report
+before committing.
+
 ## Request routing
 
 A request participates in a session by one of:
