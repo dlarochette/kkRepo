@@ -54,6 +54,7 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
   private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
   private static final int MAX_GALLERY_BODY_BYTES = 1024 * 1024;
   private StagingHttpSupport stagingHttp;
+  private com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget;
 
   public OpenVsxProtocolHandler(
       OpenVsxHostedService hosted,
@@ -73,6 +74,12 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
     this.stagingHttp = stagingHttp;
   }
 
+  @Autowired(required = false)
+  public void setGroupWriteTargetService(
+      com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget) {
+    this.groupWriteTarget = groupWriteTarget;
+  }
+
   @Override
   public Collection<RepositoryProtocolRoute> routes() {
     return ROUTES;
@@ -81,16 +88,21 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest context) throws IOException {
     HttpServletRequest request = context.servletRequest();
+    com.github.klboke.kkrepo.server.maven.RepositoryRuntime runtime = context.runtime();
+    if (context.method() != HttpMethod.GET && context.method() != HttpMethod.HEAD
+        && runtime.isGroup() && groupWriteTarget != null) {
+      runtime = groupWriteTarget.requireWriteTarget(runtime);
+    }
     if (stagingHttp != null) {
       Optional<ResponseEntity<?>> staged = stagingHttp.dispatch(
-          context.runtime(), context.path(), request);
+          runtime, context.path(), request);
       if (staged.isPresent()) {
         return staged.get();
       }
     }
     String baseUrl = serverBaseUrl(request) + request.getContextPath()
         + RepositoryUrlPrefix.path(request);
-    String repository = context.runtime().name();
+    String repository = runtime.name();
     OpenVsxQuery query = OpenVsxQuery.from(request);
     try {
       OpenVsxPath path = parser.parse(context.path());
@@ -104,23 +116,23 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
         query = query.withVscodeBody(body, objectMapper);
       }
       if (context.method() == HttpMethod.POST && path.kind() == OpenVsxPath.Kind.PUBLISH) {
-        if (context.runtime().type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
+        if (runtime.type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
           throw new MavenExceptions.MavenNotFoundException(path.rawPath());
         }
         String actor = actor(request);
         String ip = ClientAddress.from(request);
         try (InputStream body = request.getInputStream()) {
-          return response(hosted.publish(context.runtime(), body, actor, ip, baseUrl, repository)
+          return response(hosted.publish(runtime, body, actor, ip, baseUrl, repository)
               .response(), request);
         }
       }
       if (context.method() == HttpMethod.DELETE) {
-        if (context.runtime().type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
+        if (runtime.type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
           throw new MavenExceptions.MethodNotAllowed(
               "Open VSX deletion is only available on hosted repositories");
         }
         MavenResponse response = switch (path.kind()) {
-          case FILE, PLATFORM_FILE -> hosted.deleteExtension(context.runtime(),
+          case FILE, PLATFORM_FILE -> hosted.deleteExtension(runtime,
               path.namespace(), path.extension(), path.version(), path.targetPlatform(), true);
           default -> throw new MavenExceptions.MethodNotAllowed(
               "Delete a concrete extension version package");
@@ -147,21 +159,21 @@ public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
           throw new MavenExceptions.BadRequestException("Invalid itemName");
         }
         boolean itemHeadOnly = context.method() == HttpMethod.HEAD;
-        MavenResponse item = switch (context.runtime().type()) {
-          case HOSTED -> hosted.getItem(context.runtime(), namespace, extension, query, baseUrl,
+        MavenResponse item = switch (runtime.type()) {
+          case HOSTED -> hosted.getItem(runtime, namespace, extension, query, baseUrl,
               repository, itemHeadOnly);
-          case PROXY -> proxy.getItem(context.runtime(), namespace, extension, query, baseUrl,
+          case PROXY -> proxy.getItem(runtime, namespace, extension, query, baseUrl,
               repository, itemHeadOnly);
-          case GROUP -> group.getItem(context.runtime(), namespace, extension, query, baseUrl,
+          case GROUP -> group.getItem(runtime, namespace, extension, query, baseUrl,
               repository, itemHeadOnly);
         };
         return response(item, request);
       }
       boolean headOnly = context.method() == HttpMethod.HEAD;
-      MavenResponse response = switch (context.runtime().type()) {
-        case HOSTED -> hosted.get(context.runtime(), path, query, baseUrl, repository, headOnly);
-        case PROXY -> proxy.get(context.runtime(), path, query, baseUrl, repository, headOnly);
-        case GROUP -> group.get(context.runtime(), path, query, baseUrl, repository, headOnly);
+      MavenResponse response = switch (runtime.type()) {
+        case HOSTED -> hosted.get(runtime, path, query, baseUrl, repository, headOnly);
+        case PROXY -> proxy.get(runtime, path, query, baseUrl, repository, headOnly);
+        case GROUP -> group.get(runtime, path, query, baseUrl, repository, headOnly);
       };
       return response(response, request);
     } catch (MavenExceptions.MavenNotFoundException notFound) {
