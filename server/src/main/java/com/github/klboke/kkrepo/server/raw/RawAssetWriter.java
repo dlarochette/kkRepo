@@ -124,6 +124,64 @@ class RawAssetWriter {
     }
   }
 
+  /**
+   * Stores staged bytes from an already materialized file without creating live rows. Used by
+   * format adapters that must inspect the payload before publishing it.
+   */
+  AssetBlobRecord storeStagedBlobFile(
+      RepositoryRuntime runtime,
+      BlobStorage storage,
+      long blobStoreId,
+      String path,
+      Path file,
+      String contentTypeHint,
+      Map<String, ?> extraBlobAttributes,
+      String createdBy,
+      String createdByIp) {
+    DigestedUpload upload = uploadFileWithDigests(
+        runtime, storage, blobStoreId, path, file, extraBlobAttributes);
+    try {
+      return executePersist(
+          "Store staged file blob " + runtime.name() + "/" + path,
+          () -> persistStagedBlob(
+              blobStoreId, upload, contentTypeHint, extraBlobAttributes, createdBy, createdByIp));
+    } catch (RuntimeException error) {
+      cleanupUploadedBlob(storage, blobStoreId, upload);
+      throw error;
+    }
+  }
+
+  /**
+   * Links an existing blob as a hidden, component-less live asset during promotion.
+   */
+  void linkExistingBlobUnindexed(
+      RepositoryRuntime runtime,
+      BlobStorage storage,
+      long blobStoreId,
+      String path,
+      AssetBlobRecord blob,
+      String contentTypeHint,
+      String createdBy,
+      String createdByIp) {
+    if (blob == null || blob.id() == null || blob.blobStoreId() != blobStoreId) {
+      throw new IllegalArgumentException("An existing blob from the repository blob store is required");
+    }
+    String sha512 = blob.attributes() == null
+        ? "" : String.valueOf(blob.attributes().getOrDefault("sha512", ""));
+    Digests digests = new Digests(blob.md5(), blob.sha1(), blob.sha256(), sha512, blob.size());
+    DigestedUpload upload = new DigestedUpload(
+        BlobReferenceCodec.reference(
+            blob.blobRef(), blob.objectKey(), blob.sha256(), blob.size()),
+        digests,
+        null,
+        false);
+    executePersist(
+        "Link existing unindexed blob " + runtime.name() + "/" + path,
+        () -> persist(
+            runtime, storage, blobStoreId, path, upload, contentTypeHint, Map.of(),
+            createdBy, createdByIp, ComponentBinding.none(), Map.of(), null, null, true));
+  }
+
   private AssetBlobRecord persistStagedBlob(
       long blobStoreId,
       DigestedUpload upload,
