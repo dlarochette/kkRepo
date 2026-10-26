@@ -29,8 +29,14 @@ class OpenVsxProtocolHandlerTest {
   private final OpenVsxHostedService hosted = mock(OpenVsxHostedService.class);
   private final OpenVsxProxyService proxy = mock(OpenVsxProxyService.class);
   private final OpenVsxGroupService group = mock(OpenVsxGroupService.class);
+  private final com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget =
+      mock(com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService.class);
   private final OpenVsxProtocolHandler handler = new OpenVsxProtocolHandler(
       hosted, proxy, group, new ForwardedHeaderPolicy(""), new ObjectMapper());
+
+  {
+    handler.setGroupWriteTargetService(groupWriteTarget);
+  }
 
   @Test
   void delegatesMetadataReadsToTheMatchingFacet() throws Exception {
@@ -59,6 +65,23 @@ class OpenVsxProtocolHandlerTest {
 
     assertEquals(201, response.getStatusCode().value());
     verify(hosted).publish(eq(runtime), any(), eq("anonymous"), any(), any(), eq("demo"));
+  }
+
+  @Test
+  void redirectsGroupPublishToTheConfiguredHostedMember() throws Exception {
+    RepositoryRuntime groupRuntime = runtime(RepositoryType.GROUP);
+    RepositoryRuntime hostedRuntime = runtime(RepositoryType.HOSTED);
+    when(groupWriteTarget.requireWriteTarget(groupRuntime)).thenReturn(hostedRuntime);
+    byte[] body = "vsix".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    when(hosted.publish(eq(hostedRuntime), any(), eq("anonymous"), any(), any(), eq("demo")))
+        .thenReturn(new OpenVsxHostedService.Published(
+            MavenResponse.created().withStatus(201), "acme/demo/1.0.0/demo.vsix"));
+
+    ResponseEntity<?> response = handler.handle(
+        request(groupRuntime, "POST", "api/-/publish", body));
+
+    assertEquals(201, response.getStatusCode().value());
+    verify(hosted).publish(eq(hostedRuntime), any(), eq("anonymous"), any(), any(), eq("demo"));
   }
 
   @Test
