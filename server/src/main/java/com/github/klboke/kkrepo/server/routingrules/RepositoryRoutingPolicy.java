@@ -3,9 +3,15 @@ package com.github.klboke.kkrepo.server.routingrules;
 import com.github.klboke.kkrepo.core.http.UriPathDecoder;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao.Rule;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.protocol.alpine.AlpinePathParser;
+import com.github.klboke.kkrepo.protocol.ansible.AnsibleGalaxyPath;
+import com.github.klboke.kkrepo.protocol.ansible.AnsibleGalaxyPathParser;
+import com.github.klboke.kkrepo.protocol.apt.AptPathParser;
 import com.github.klboke.kkrepo.protocol.cargo.CargoCrateName;
 import com.github.klboke.kkrepo.protocol.cargo.CargoIndexPath;
 import com.github.klboke.kkrepo.protocol.cargo.CargoPathParser;
+import com.github.klboke.kkrepo.protocol.conda.CondaPath;
+import com.github.klboke.kkrepo.protocol.conda.CondaPathParser;
 import com.github.klboke.kkrepo.protocol.npm.NpmPathParser;
 import com.github.klboke.kkrepo.protocol.nuget.NugetPathParser;
 import com.github.klboke.kkrepo.protocol.nuget.NugetPaths;
@@ -13,6 +19,7 @@ import com.github.klboke.kkrepo.protocol.pub.PubPackageName;
 import com.github.klboke.kkrepo.protocol.pub.PubPathParser;
 import com.github.klboke.kkrepo.protocol.pub.PubPaths;
 import com.github.klboke.kkrepo.protocol.pub.PubVersions;
+import com.github.klboke.kkrepo.protocol.r.RPathParser;
 import com.github.klboke.kkrepo.protocol.swift.SwiftPackageName;
 import com.github.klboke.kkrepo.protocol.swift.SwiftPathParser;
 import com.github.klboke.kkrepo.protocol.swift.SwiftScope;
@@ -76,12 +83,30 @@ public class RepositoryRoutingPolicy {
         case PUB -> pubMatchingPath(path);
         case CARGO -> cargoMatchingPath(path);
         case NUGET -> nugetMatchingPath(path);
+        case ANSIBLEGALAXY -> {
+          var parsed = new AnsibleGalaxyPathParser().parse(path);
+          yield parsed.kind() == AnsibleGalaxyPath.Kind.UNKNOWN ? matchingPath(path)
+              : canonicalPath(UriPathDecoder.decodePath(path)).replaceAll("(?<=.)/+$", "");
+        }
+        case R -> parsedPathOrRaw(new RPathParser().parse(path).normalized(), path);
+        case APT -> parsedPathOrRaw(new AptPathParser().parse(path).normalized(), path);
+        case ALPINE -> parsedPathOrRaw(new AlpinePathParser().parse(path).normalized(), path);
+        case CONDA -> {
+          var parsed = new CondaPathParser().parse(path);
+          yield parsed.kind() == CondaPath.Kind.UNKNOWN ? matchingPath(path) : canonicalPath(parsed.canonicalPath());
+        }
+        // These handlers normalize their raw input before cache lookup and remote access.
+        case YUM, RUBYGEMS -> matchingPath(path.trim()).replaceAll("(?<=.)/+$", "");
         default -> matchingPath(path);
       };
     } catch (IllegalArgumentException invalid) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
     }
     return prepareMatchedPath(runtime, matched, request);
+  }
+
+  private static String parsedPathOrRaw(String parsed, String raw) {
+    return parsed == null ? matchingPath(raw) : canonicalPath(parsed);
   }
 
   private static String swiftMatchingPath(String raw) {

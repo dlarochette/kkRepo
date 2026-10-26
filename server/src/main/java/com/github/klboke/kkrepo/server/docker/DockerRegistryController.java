@@ -406,12 +406,20 @@ public class DockerRegistryController {
       throw new DockerProtocolException(DockerErrorCode.NAME_UNKNOWN, target.repository());
     }
     if (routingPolicy != null && ("GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod()))) {
-      String path = request.getRequestURI().substring(request.getContextPath().length());
-      if (!target.connectorRoute()) {
-        int separator = path.indexOf('/', "/v2/".length());
-        path = "/v2/" + (separator < 0 ? "" : path.substring(separator + 1));
-      }
-      runtime = routingPolicy.prepare(runtime, path, request);
+      // The target parser has already decoded segments and normalized digest identities.
+      // Match that same resource, including connector routes without a repository prefix.
+      DockerPath parsed = target.path();
+      String path = "/v2/" + switch (parsed.kind()) {
+        case BASE -> "";
+        case CATALOG -> "_catalog";
+        case MANIFEST -> parsed.imageName() + "/manifests/" + parsed.reference();
+        case BLOB -> parsed.imageName() + "/blobs/" + parsed.digest().value();
+        case REFERRERS -> parsed.imageName() + "/referrers/" + parsed.digest().value();
+        case TAGS -> parsed.imageName() + "/tags/list";
+        case UPLOAD_START -> parsed.imageName() + "/blobs/uploads";
+        case UPLOAD_SESSION -> parsed.imageName() + "/blobs/uploads/" + parsed.uploadUuid();
+      };
+      runtime = routingPolicy.prepareCanonical(runtime, path, request);
     }
     return runtime;
   }

@@ -45,6 +45,16 @@ class RepositoryProtocolDispatcherTest {
         new Case(RepositoryFormat.NUGET, List.of("/v3-flatcontainer/private/.*", "/v3/registration5-semver[12]/private/.*"),
             List.of("v3-flatcontainer/PRIVATE/index.json", "v3/registration5-semver1/PRIVATE/index.json",
                 "v3/registration5-semver2/PRIVATE/index.json"), "v3-flatcontainer/public/index.json"),
+        new Case(RepositoryFormat.R, List.of("/src/contrib/private_.*\\.tar\\.gz", "/src/contrib/PACKAGES"),
+            List.of("src/contrib/private_1.0.tar.gz/", "src/contrib/PACKAGES/"), "src/contrib/public_1.0.tar.gz"),
+        new Case(RepositoryFormat.APT, List.of("/dists/stable/Release"), List.of("dists/stable/Release/"), "dists/public/Release"),
+        new Case(RepositoryFormat.ALPINE, List.of("/v3.20/main/x86_64/APKINDEX.tar.gz"),
+            List.of("v3.20/main/x86_64/APKINDEX.tar.gz/"), "v3.20/public/x86_64/APKINDEX.tar.gz"),
+        new Case(RepositoryFormat.CONDA, List.of("/linux-64/repodata.json"), List.of("linux-64/repodata.json/"), "noarch/repodata.json"),
+        new Case(RepositoryFormat.YUM, List.of("/private.rpm"), List.of("private.rpm/"), "public.rpm"),
+        new Case(RepositoryFormat.RUBYGEMS, List.of("/gems/private-1.0.0.gem"), List.of("gems/private-1.0.0.gem/"), "gems/public-1.0.0.gem"),
+        new Case(RepositoryFormat.ANSIBLEGALAXY, List.of("/api/v3/collections/private/pkg/versions"),
+            List.of("api/v3/collections/private/pkg/versions/"), "api/v3/collections/public/pkg/versions/"),
         new Case(RepositoryFormat.RAW, List.of("/private/.*"), List.of("private/file"), "PRIVATE/file"));
     for (Case test : cases) {
       RepositoryRuntime proxy = runtime(test.format(), RepositoryType.PROXY);

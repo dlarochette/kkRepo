@@ -25,7 +25,7 @@ class RoutingRulesBlackBoxCompatibilityTest {
       .connectTimeout(Duration.ofSeconds(15)).build();
 
   @ParameterizedTest
-  @ValueSource(strings = {"swift", "pub", "cargo", "nuget"})
+  @ValueSource(strings = {"swift", "pub", "cargo", "nuget", "r", "apt", "alpine", "conda", "yum", "rubygems", "ansiblegalaxy", "docker"})
   void canonicalPackageAliasesAreBlockedBeforeUpstreamAccess(String format) throws Exception {
     assumeTrue(Boolean.parseBoolean(CompatDefaults.setting("compat.routingRules", "ROUTING_RULES_COMPAT_ENABLED").orElse("false")));
     assumeTrue(!Boolean.getBoolean("compat.routingRules.referenceOnly"));
@@ -37,12 +37,28 @@ class RoutingRulesBlackBoxCompatibilityTest {
       case "swift" -> List.of("/private/.*");
       case "pub" -> List.of("/api/packages/private", "/api/packages/private/versions/1.0.0");
       case "cargo" -> List.of("/api/v1/crates/private/.*");
+      case "ansiblegalaxy" -> List.of("/api/v3/collections/private/pkg/versions");
+      case "docker" -> List.of("/v2/private/pkg/blobs/sha256:" + "a".repeat(64), "/v2/private/pkg/tags/list");
+      case "r" -> List.of("/src/contrib/private_.*\\.tar\\.gz", "/src/contrib/PACKAGES");
+      case "apt" -> List.of("/dists/stable/Release");
+      case "alpine" -> List.of("/v3.20/main/x86_64/APKINDEX.tar.gz");
+      case "conda" -> List.of("/linux-64/repodata.json");
+      case "yum" -> List.of("/private.rpm");
+      case "rubygems" -> List.of("/gems/private-1.0.0.gem");
       default -> List.of("/v3-flatcontainer/private/.*", "/v3/registration5-semver[12]/private/.*");
     };
     List<String> aliases = switch (format) {
       case "swift" -> List.of("PRIVATE/pkg/1.0.0.zip", "PRIVATE/PKG/1.0.0/Package.swift", "PRIVATE/pkg.json");
       case "pub" -> List.of("api/packages/private/", "api/packages/private/versions/1.0.0/");
       case "cargo" -> List.of("api/v1/crates/PRIVATE/1.0.0/download", "api/v1/crates/%20private/1.0.0/download");
+      case "ansiblegalaxy" -> List.of("api/v3/collections/private/pkg/versions/");
+      case "docker" -> List.of("private/pkg/blobs/SHA256:" + "A".repeat(64), "private/pkg/tags/list/");
+      case "r" -> List.of("src/contrib/private_1.0.tar.gz/", "src/contrib/PACKAGES/");
+      case "apt" -> List.of("dists/stable/Release/");
+      case "alpine" -> List.of("v3.20/main/x86_64/APKINDEX.tar.gz/");
+      case "conda" -> List.of("linux-64/repodata.json/");
+      case "yum" -> List.of("private.rpm/");
+      case "rubygems" -> List.of("gems/private-1.0.0.gem/");
       default -> List.of("v3-flatcontainer/PRIVATE/index.json", "v3/registration5-semver1/PRIVATE/index.json",
           "v3/registration5-semver2/PRIVATE/index.json");
     };
@@ -50,8 +66,9 @@ class RoutingRulesBlackBoxCompatibilityTest {
       check(e, "POST", rules, rule(rule, "BLOCK", matchers), 204);
       e.create(proxy, "proxy", format.equals("swift") ? "https://github.com/" : e.upstreamBase() + "/repository/" + prefix + "-missing/", rule, List.of());
       for (String alias : aliases) {
-        check(e, "GET", "/repository/" + proxy + "/" + alias, null, 403);
-        check(e, "HEAD", "/repository/" + proxy + "/" + alias, null, 403);
+        String url = (format.equals("docker") ? "/v2/" : "/repository/") + proxy + "/" + alias;
+        check(e, "GET", url, null, 403);
+        check(e, "HEAD", url, null, 403);
       }
     } finally {
       e.removeRepository(proxy);
@@ -240,8 +257,8 @@ class RoutingRulesBlackBoxCompatibilityTest {
     }
 
     void removeRepository(String name) throws Exception {
-      if (!nexus) {
-        // Explicit source also removes Maven group-owned cache assets, not member contents.
+      if (!nexus && List.of("raw", "maven2", "npm").contains(format)) {
+        // Only the cache-warming fixtures populate content. Explicit source also removes Maven group-owned cache assets, not member contents.
         for (String path : List.of("blocked", "allowed", "allowed;private", "private")) {
           HttpResponse<String> removed = send("DELETE", "/internal/browse/" + name
               + "?path=" + path + "&source=" + name, null);

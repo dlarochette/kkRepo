@@ -12,7 +12,7 @@
 
 被阻止的直接代理读取返回 HTTP 403，已经缓存的内容同样受限。通过 group 访问时，会跳过被阻止的代理成员，按成员顺序继续查找。hosted 仓库不受影响。规则针对请求路径，不会检查漏洞，也不会从已允许访问的索引文档中删除条目。漏洞判定使用制品扫描策略，按用户授权使用内容选择器。
 
-匹配使用协议实际读取的路径身份。例如 PyPI 的 `/simple/PRIVATE` 按 `/simple/private/` 匹配，npm 包名别名使用解析后的包名，Terraform URL 中的凭据段不参与匹配。Swift 的 scope/包名、Cargo crate 名和 NuGet 元数据包 ID 使用规范化大小写；Pub 使用合法包名并移除末尾斜杠别名。Raw 文件名中的大小写和分号会保留。规则测试器直接匹配输入的路径，验证这些场景时应输入规范化后的协议路径。
+匹配使用协议实际读取的路径身份。例如 PyPI 的 `/simple/PRIVATE` 按 `/simple/private/` 匹配，npm 包名别名使用解析后的包名，Terraform URL 中的凭据段不参与匹配。Swift 的 scope/包名、Cargo crate 名和 NuGet 元数据包 ID 使用规范化大小写；Pub 使用合法包名并移除末尾斜杠别名。其他包协议也会按读取逻辑移除受支持的尾斜杠别名；Docker 匹配解析后的 `/v2/` 资源路径及规范化 blob 摘要。Raw 文件名中的大小写和分号会保留。规则测试器直接匹配输入的路径，验证这些场景时应输入规范化后的协议路径。
 
 管理接口与 Nexus 一致：`/service/rest/v1/routing-rules` 支持 GET、POST，`/{name}` 支持 GET、PUT、DELETE。请求体示例：
 
