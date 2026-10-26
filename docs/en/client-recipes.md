@@ -845,6 +845,55 @@ scripts/docker-compat/client-compat.sh
 
 Do not assume Docker pull/push works through `/repository/<repo>/...`.
 
+## VS Code / Open VSX
+
+Publish with an `OpenVsxToken` API key:
+
+```bash
+ovsx publish \
+  --registryUrl https://nexus.example.com/repository/openvsx-hosted \
+  --pat "$OPENVSX_TOKEN" \
+  acme-demo-1.0.0.vsix
+```
+
+Read metadata and download the VSIX:
+
+```bash
+curl https://nexus.example.com/repository/openvsx-group/api/acme/demo
+curl -O https://nexus.example.com/repository/openvsx-group/api/acme/demo/1.0.0/file/acme.demo-1.0.0.vsix
+```
+
+VS Code-compatible editors can point their gallery at
+`https://nexus.example.com/repository/openvsx-group/vscode/gallery`.
+
+See the [VS Code / Open VSX Repository Guide](repository-guides/openvsx.md).
+
+## Arch Linux / Pacman
+
+```ini
+[kkrepo-demo]
+SigLevel = Required DatabaseRequired
+Server = https://nexus.example.com/repository/arch-group
+```
+
+```bash
+curl -fsSL https://nexus.example.com/repository/arch-hosted/public-key \
+  -o /tmp/kkrepo-arch.asc
+sudo pacman-key --add /tmp/kkrepo-arch.asc
+sudo pacman-key --lsign-key "$(gpg --show-keys --with-colons /tmp/kkrepo-arch.asc \
+  | awk -F: '/^fpr:/ { print $10; exit }')"
+sudo pacman -Sy
+sudo pacman -S demo
+curl -u alice:"$KKREPO_PASSWORD" \
+  -T demo-1.0.0-1-x86_64.pkg.tar.zst \
+  https://nexus.example.com/repository/arch-hosted/demo-1.0.0-1-x86_64.pkg.tar.zst
+```
+
+Without a configured signing key, use `SigLevel = Optional TrustAll` or omit
+`DatabaseRequired`.
+
+See the [Arch Linux / Pacman Repository Guide](repository-guides/arch-linux.md).
+
 ## Troubleshooting Client Configuration
 
 - A `401` usually means missing or invalid credentials.

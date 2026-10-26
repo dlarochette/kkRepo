@@ -27,6 +27,8 @@ public enum RepositoryFormat {
   R,
   HUGGINGFACE,
   GITLFS,
+  OPENVSX,
+  ARCH,
   RAW;
 
   @JsonCreator

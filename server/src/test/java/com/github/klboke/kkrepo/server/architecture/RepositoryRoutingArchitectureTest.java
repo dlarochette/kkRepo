@@ -37,6 +37,7 @@ class RepositoryRoutingArchitectureTest {
         .that().resideInAnyPackage(
             "..server.alpine..",
             "..server.ansible..",
+            "..server.arch..",
             "..server.apt..",
             "..server.cargo..",
             "..server.composer..",
@@ -50,6 +51,7 @@ class RepositoryRoutingArchitectureTest {
             "..server.maven..",
             "..server.npm..",
             "..server.nuget..",
+            "..server.openvsx..",
             "..server.pub..",
             "..server.pypi..",
             "..server.r..",

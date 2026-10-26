@@ -164,6 +164,14 @@
     </dependency>
     <dependency>
       <groupId>com.github.klboke</groupId>
+      <artifactId>kkrepo-protocol-openvsx</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.github.klboke</groupId>
+      <artifactId>kkrepo-protocol-arch</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.github.klboke</groupId>
       <artifactId>kkrepo-protocol-gitlfs</artifactId>
     </dependency>
     <dependency>

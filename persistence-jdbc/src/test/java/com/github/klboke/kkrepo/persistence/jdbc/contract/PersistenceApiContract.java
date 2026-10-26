@@ -15,6 +15,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.StorageStatisticsDao.Reposi
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryType;
 import com.github.klboke.kkrepo.persistence.jdbc.api.AnsibleGalaxyRegistryDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.ArchSigningKeyDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.ArtifactChangeDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.CleanupPolicyDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.ComponentDao.ComponentSearchCursor;
@@ -274,6 +275,28 @@ public abstract class PersistenceApiContract {
   }
 
   @Test
+  void archSigningKeysRotateAndRetainThePreviousRevision() {
+    long repositoryId = createRepository("arch-signing-contract", RepositoryFormat.ARCH);
+    ArchSigningKeyDao dao = stores().archSigningKeys();
+    assertTrue(dao.findActiveSigningKey(repositoryId).isEmpty());
+
+    dao.insertSigningKey(new ArchSigningKeyDao.SigningKey(
+        repositoryId, 1, "1111111111111111", "F".repeat(64), "encrypted-1", "public-1", true,
+        Instant.parse("2026-01-01T00:00:00Z")));
+    assertEquals("1111111111111111",
+        dao.findActiveSigningKey(repositoryId).orElseThrow().keyId());
+
+    dao.insertSigningKey(new ArchSigningKeyDao.SigningKey(
+        repositoryId, 2, "2222222222222222", "E".repeat(64), "encrypted-2", "public-2", true,
+        Instant.parse("2026-01-02T00:00:00Z")));
+    assertEquals(2, dao.findActiveSigningKey(repositoryId).orElseThrow().revision());
+    assertEquals(2, dao.listSigningKeys(repositoryId, 2).size());
+    assertEquals("1111111111111111",
+        dao.findSigningKey(repositoryId, 1).orElseThrow().keyId());
+    assertEquals(3, dao.nextRevisionLocked(repositoryId));
+  }
+
+  @Test
   void baselineContainsTheCompleteSharedLogicalSchema() {
     assertEquals(Set.of(
         "gitlfs_object",
@@ -296,6 +319,7 @@ public abstract class PersistenceApiContract {
         "alpine_publish_lease",
         "alpine_signing_key",
         "alpine_snapshot",
+        "arch_signing_key",
         "alpine_suite_state",
         "apt_package_record",
         "apt_package_tombstone",
