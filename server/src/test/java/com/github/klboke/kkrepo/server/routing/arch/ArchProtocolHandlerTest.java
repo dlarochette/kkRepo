@@ -22,7 +22,13 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class ArchProtocolHandlerTest {
   private final ArchService service = mock(ArchService.class);
+  private final com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget =
+      mock(com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService.class);
   private final ArchProtocolHandler handler = new ArchProtocolHandler(service);
+
+  {
+    handler.setGroupWriteTargetService(groupWriteTarget);
+  }
 
   @Test
   void publishesPackagesWithPut() throws Exception {
@@ -38,6 +44,24 @@ class ArchProtocolHandlerTest {
     assertEquals(201, response.getStatusCode().value());
     assertEquals("demo-1.0.0-1-x86_64.pkg.tar.zst",
         response.getHeaders().getFirst("Location"));
+  }
+
+  @Test
+  void redirectsGroupWritesToTheConfiguredHostedMember() throws Exception {
+    RepositoryRuntime group = runtime(RepositoryType.GROUP);
+    RepositoryRuntime hosted = runtime(RepositoryType.HOSTED);
+    when(groupWriteTarget.requireWriteTarget(group)).thenReturn(hosted);
+    byte[] body = "package".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    when(service.publish(eq(hosted), eq("demo-1.0.0-1-x86_64.pkg.tar.zst"),
+        any(), eq("anonymous"), any()))
+        .thenReturn(new ArchService.Published("demo-1.0.0-1-x86_64.pkg.tar.zst"));
+
+    ResponseEntity<?> response = handler.handle(request(group, "PUT",
+        "demo-1.0.0-1-x86_64.pkg.tar.zst", body));
+
+    assertEquals(201, response.getStatusCode().value());
+    verify(service).publish(eq(hosted), eq("demo-1.0.0-1-x86_64.pkg.tar.zst"),
+        any(), eq("anonymous"), any());
   }
 
   @Test
