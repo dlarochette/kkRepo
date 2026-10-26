@@ -16,6 +16,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.server.PathContainer;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -50,7 +51,17 @@ public class RepositoryRoutingPolicy {
       Map<Long, Rule> bindings = new HashMap<>();
       rules.bindings().forEach(binding -> bindings.put(binding.repositoryId(), binding.rule()));
       String decoded;
-      try { decoded = UriPathDecoder.decodeComponent(path); }
+      try {
+        // Retain strict percent/UTF-8 validation, then use MVC's segment interpretation:
+        // literal matrix parameters are removed before decoding; encoded semicolons remain data.
+        UriPathDecoder.decodeComponent(path);
+        StringBuilder mvcPath = new StringBuilder();
+        for (PathContainer.Element element : PathContainer.parsePath(path).elements()) {
+          mvcPath.append(element instanceof PathContainer.PathSegment segment
+              ? segment.valueToMatch().replace("/", "%2F") : element.value());
+        }
+        decoded = mvcPath.toString();
+      }
       catch (IllegalArgumentException invalid) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
       }

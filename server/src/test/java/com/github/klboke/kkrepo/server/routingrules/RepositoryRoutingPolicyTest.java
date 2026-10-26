@@ -118,6 +118,18 @@ class RepositoryRoutingPolicyTest {
     assertThrows(IllegalStateException.class, () -> policy.prepare(proxy, "/public/file", request()));
   }
 
+  @Test void matrixParametersFollowMvcWithoutReinterpretingEncodedSemicolons() {
+    RepositoryRuntime proxy = runtime(1, RepositoryType.PROXY);
+    RepositoryRuntime hosted = runtime(2, RepositoryType.HOSTED);
+    RepositoryRuntime group = runtime(3, RepositoryType.GROUP).withMembers(List.of(proxy, hosted));
+    when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/simple/private/.*")));
+    assertThrows(RepositoryRoutingPolicy.Blocked.class,
+        () -> policy.prepare(proxy, "/simple;x=1/private;x=2/", request()));
+    assertEquals(List.of(hosted), policy.prepare(group, "/simple/private;x=2/", request()).members());
+    assertSame(proxy, policy.prepare(proxy, "/simple/private%3Bx=2/", request()));
+    assertSame(proxy, policy.prepare(proxy, "/simple/private%253Bx=2/", request()));
+  }
+
   private Binding binding(String mode, String... matchers) {
     return new Binding(1, new Rule(10, "rule", "", mode, List.of(matchers)));
   }

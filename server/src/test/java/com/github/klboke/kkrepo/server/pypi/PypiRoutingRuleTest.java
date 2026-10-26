@@ -1,0 +1,45 @@
+package com.github.klboke.kkrepo.server.pypi;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+
+import com.github.klboke.kkrepo.core.RepositoryFormat;
+import com.github.klboke.kkrepo.core.RepositoryType;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
+import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
+import com.github.klboke.kkrepo.server.routingrules.RoutingRuleErrorAdvice;
+import java.util.List;
+import java.util.Optional;
+import org.junit.jupiter.api.Test;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+class PypiRoutingRuleTest {
+  @Test void mvcMatrixParametersCannotBypassProjectIndexRules() throws Exception {
+    var runtime = mock(RepositoryRuntime.class);
+    when(runtime.id()).thenReturn(1L);
+    when(runtime.format()).thenReturn(RepositoryFormat.PYPI);
+    when(runtime.type()).thenReturn(RepositoryType.PROXY);
+    when(runtime.isProxy()).thenReturn(true);
+    var registry = mock(RepositoryRuntimeRegistry.class);
+    when(registry.resolve("p")).thenReturn(Optional.of(runtime));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+        new RoutingRuleDao.Rule(1, "private", "", "BLOCK", List.of("/simple/private/.*")))));
+    var proxy = mock(PypiProxyService.class);
+    when(proxy.getIndex(eq(runtime), eq("private"), anyBoolean())).thenReturn(PypiResponse.noBody(200));
+    var controller = new PypiRepositoryController(registry, null, proxy, null, null);
+    controller.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+    var mvc = MockMvcBuilders.standaloneSetup(controller)
+        .addPlaceholderValue("kkrepo.compatibility.repository-url-prefix", "/repository")
+        .setControllerAdvice(new RoutingRuleErrorAdvice()).build();
+    for (String path : List.of("/repository/p/simple/private/", "/repository/p/simple/private;x=1/",
+        "/repository/p/simple;x=1/private;x=2/")) {
+      assertEquals(403, mvc.perform(get(path)).andReturn().getResponse().getStatus(), path);
+      assertEquals(403, mvc.perform(head(path)).andReturn().getResponse().getStatus(), path);
+    }
+    verifyNoInteractions(proxy);
+  }
+}
