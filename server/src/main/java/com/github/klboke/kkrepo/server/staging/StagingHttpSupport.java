@@ -6,6 +6,7 @@ import com.github.klboke.kkrepo.server.maven.MavenExceptions;
 import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
+import com.github.klboke.kkrepo.server.security.ClientAddress;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.InputStream;
@@ -77,19 +78,17 @@ public class StagingHttpSupport {
       HttpServletRequest request) throws IOException {
     if ("DELETE".equalsIgnoreCase(request.getMethod())) {
       int deleted = staging.deleteRaw(
-          runtime, sessionKey, path, subject(request), request.getRemoteAddr());
+          runtime, sessionKey, path, subject(request), ClientAddress.from(request));
       return ResponseEntity.status(
           deleted == 0 ? HttpStatus.NOT_FOUND : HttpStatus.NO_CONTENT).build();
     }
-    try (InputStream body = request.getInputStream()) {
-      StagingService.StagingWriteResult result = staging.putRaw(
-          runtime, sessionKey, path, body, request.getContentType(),
-          subject(request), request.getRemoteAddr());
-      return ResponseEntity.status(HttpStatus.CREATED)
-          .header(StagingService.HEADER, String.valueOf(result.sessionId()))
-          .header("X-KkRepo-Staging-Action", result.action())
-          .build();
-    }
+    StagingService.StagingWriteResult result = staging.putRequest(
+        runtime, sessionKey, path, request,
+        subject(request), ClientAddress.from(request));
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .header(StagingService.HEADER, String.valueOf(result.sessionId()))
+        .header("X-KkRepo-Staging-Action", result.action())
+        .build();
   }
 
   private static ResponseEntity<?> headResponse(

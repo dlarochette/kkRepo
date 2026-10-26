@@ -27,6 +27,7 @@ import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
 import com.github.klboke.kkrepo.server.security.SecurityManagementService;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -487,6 +488,13 @@ public class StagingService {
         .orElseThrow(() -> new ResponseStatusException(
             HttpStatus.CONFLICT, "Staged blob is no longer available for " + item.logicalPath()));
     requireBlobMatchesItem(blob, item);
+    if (adapter != null) {
+      Optional<String> promoted = adapter.promote(
+          runtime, item, blobSource(blob), actorUserId(actor), "staging");
+      if (promoted.isPresent()) {
+        return promoted.get();
+      }
+    }
     if (StagingComponents.unindexed(item.attributes())) {
       rawHosted.linkInternalBlobUnindexed(
           runtime, item.logicalPath(), blob, item.contentType(), createdBy, "staging");
@@ -635,21 +643,81 @@ public class StagingService {
       throw new MavenExceptions.MethodNotAllowed(
           "Staging writes are not supported for " + runtime.format().id() + " repositories");
     }
+    StagingContentAdapter.StagedUpload upload = adapter == null
+        ? stageRaw(runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr)
+        : adapter.stage(runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr);
+    return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
+  /** Request-aware staging entry point used for multipart publication endpoints. */
+  @Transactional
+  public StagingWriteResult putRequest(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String rawPath,
+      HttpServletRequest request,
+      PermissionSubject actor,
+      String remoteAddr) throws java.io.IOException {
+    StagingSessionRecord session = lockSessionByKey(sessionKey);
+    requireSessionWritable(session, runtime, actor);
+    StagingContentAdapter adapter = adapterFor(runtime.format());
     StagingContentAdapter.StagedUpload upload;
-    String path;
-    if (adapter != null) {
-      upload = adapter.stage(
-          runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr);
-      path = upload.logicalPath();
+    if (adapter == null) {
+      if (runtime.format() != RepositoryFormat.RAW) {
+        throw new MavenExceptions.MethodNotAllowed(
+            "Staging writes are not supported for " + runtime.format().id() + " repositories");
+      }
+      try (InputStream body = request.getInputStream()) {
+        upload = stageRaw(
+            runtime, rawPath, body, request.getContentType(), actorUserId(actor), remoteAddr);
+      }
     } else {
-      path = RawHostedService.normalizeAssetPath(rawPath);
-      AssetBlobRecord blob = rawHosted.storeStagedBlob(
-          runtime, path, body, contentType, Map.of(), actorUserId(actor), remoteAddr);
-      Map<String, Object> attributes = new LinkedHashMap<>();
-      attributes.put(StagingComponents.ATTRIBUTE,
-          StagingComponents.encode(rawComponent(runtime, path)));
-      upload = new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
+      upload = adapter.stageRequest(
+              runtime, rawPath, request, actorUserId(actor), remoteAddr)
+          .orElseGet(() -> stageAdapterStream(
+              adapter, runtime, rawPath, request, actorUserId(actor), remoteAddr));
     }
+    return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
+  private StagingContentAdapter.StagedUpload stageAdapterStream(
+      StagingContentAdapter adapter,
+      RepositoryRuntime runtime,
+      String rawPath,
+      HttpServletRequest request,
+      String actor,
+      String remoteAddr) {
+    try (InputStream body = request.getInputStream()) {
+      return adapter.stage(
+          runtime, rawPath, body, request.getContentType(), actor, remoteAddr);
+    } catch (java.io.IOException error) {
+      throw new java.io.UncheckedIOException(error);
+    }
+  }
+
+  private StagingContentAdapter.StagedUpload stageRaw(
+      RepositoryRuntime runtime,
+      String rawPath,
+      InputStream body,
+      String contentType,
+      String actor,
+      String remoteAddr) {
+    String path = RawHostedService.normalizeAssetPath(rawPath);
+    AssetBlobRecord blob = rawHosted.storeStagedBlob(
+        runtime, path, body, contentType, Map.of(), actor, remoteAddr);
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    attributes.put(StagingComponents.ATTRIBUTE,
+        StagingComponents.encode(rawComponent(runtime, path)));
+    return new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
+  }
+
+  private StagingWriteResult persistStagedUpload(
+      StagingSessionRecord session,
+      RepositoryRuntime runtime,
+      StagingContentAdapter.StagedUpload upload,
+      PermissionSubject actor,
+      String remoteAddr) {
+    String path = upload.logicalPath();
     WritePolicy policy = WritePolicy.parse(runtime.writePolicy());
     Optional<AssetRecord> live = assets.findAssetByPath(runtime.id(), path);
     if (policy == WritePolicy.DENY) {
@@ -682,7 +750,8 @@ public class StagingService {
         StagingDao.ITEM_STAGED,
         blob.blobStoreId(),
         blob.id(),
-        contentType == null || contentType.isBlank() ? blob.contentType() : contentType,
+        upload.contentType() == null || upload.contentType().isBlank()
+            ? blob.contentType() : upload.contentType(),
         blob.size(),
         blob.sha256(),
         blob.md5(),
@@ -1184,8 +1253,14 @@ public class StagingService {
     return response;
   }
 
-  private void releaseItemBlob(StagingItemRecord item) {
-    if (item.id() != null && item.assetBlobId() != null) {
+  private StagingBlobSource blobSource(AssetBlobRecord blob) {
+    BlobReference reference = BlobReferenceCodec.reference(
+        blob.blobRef(), blob.objectKey(), blob.sha256(), blob.size());
+    return () -> blobStorageRegistry.forBlobStoreId(blob.blobStoreId()).get(reference)
+        .orElseThrow(() -> new MavenExceptions.MavenNotFoundException(blob.objectKey()));
+  }
+
+  private void releaseItemBlob(StagingItemRecord item) {    if (item.id() != null && item.assetBlobId() != null) {
       blobReferences.releaseOwner(BLOB_OWNER_TYPE, item.id());
     }
   }

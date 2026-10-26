@@ -68,7 +68,7 @@ class RepositoryContentControllerStagingTest {
     RepositoryRuntime runtime = runtime();
     RawHostedService rawHosted = mock(RawHostedService.class);
     StagingService staging = mock(StagingService.class);
-    when(staging.putRaw(eq(runtime), any(), any(), any(), any(), any(), any()))
+    when(staging.putRequest(eq(runtime), any(), any(), any(), any(), any()))
         .thenReturn(new StagingService.StagingWriteResult(7L, 3L, "ADD", "sha", 6L));
     when(staging.deleteRaw(eq(runtime), any(), any(), any(), any()))
         .thenReturn(1);
