@@ -360,12 +360,19 @@ GET    /internal/staging/sessions/{id}
 PATCH  /internal/staging/sessions/{id}
 POST   /internal/staging/sessions/{id}/close
 POST   /internal/staging/sessions/{id}/cancel
+DELETE /internal/staging/sessions/{id}
 POST   /internal/staging/sessions/{id}/repositories
 DELETE /internal/staging/sessions/{id}/repositories/{repositoryId}
 GET    /internal/staging/sessions/{id}/items
+GET    /internal/staging/sessions/{id}/groups
+POST   /internal/staging/sessions/{id}/groups/{groupId}/members
+DELETE /internal/staging/sessions/{id}/groups/{changeId}
+POST   /internal/staging/sessions/{id}/approve
+POST   /internal/staging/sessions/{id}/compensate
 POST   /internal/staging/sessions/{id}/preflight
 POST   /internal/staging/sessions/{id}/promote
 GET    /internal/staging/sessions/{id}/report
+GET    /internal/staging/metrics
 ```
 
 Content writes and reads use existing Raw repository routes with the `X-KkRepo-Staging` header:
@@ -414,31 +421,48 @@ to upload staged content without being able to publish it.
 | Permission mapping | `SecurityManagementFilter` (`/internal/staging/**`) |
 | Raw content | `X-KkRepo-Staging` dispatch through `StagingHttpSupport`; staged blob writes through `RawHostedService.storeStagedBlob` |
 | Format adapters | `StagingContentAdapter` SPI; Raw is built in, Arch and Open VSX adapters live on their format branches |
-| Tests | `StagingServiceTest`, persistence contract `stagingSessionsItemsAndPromotionsRoundTripWithRevisionFence` on MySQL and PostgreSQL |
+| Operations | expiry sweeper, operator CLI (`scripts/kkrepo-staging.sh`), admin console (`admin/staging.html`), Micrometer gauges |
+| Tests | `StagingServiceTest`, `StagingControllerTest`, per-format adapter tests, `RawStagingBlackBoxCompatibilityTest`, persistence contracts on MySQL and PostgreSQL |
 
 Current format coverage:
 
-| Format | Staging content | Branch |
-| --- | --- | --- |
-| Raw | yes | `feat/multi-repo-staging` |
-| Maven 2 | yes | `feat/staging-maven-npm-pypi-helm` |
-| npm | yes | `feat/staging-maven-npm-pypi-helm` |
-| PyPI | yes | `feat/staging-maven-npm-pypi-helm` |
-| Helm | yes | `feat/staging-maven-npm-pypi-helm` |
-| Arch Linux | yes | `feat/staging-arch` |
-| Open VSX | yes | `feat/staging-openvsx` |
-| Docker / OCI | pending | dedicated branch |
-| Yum, APT, Alpine, R, NuGet, RubyGems, Go, Terraform, Conda, Conan, Cargo, Composer | pending | path/PUT replay branch |
-| Pub, Swift, Ansible, Git LFS, Hugging Face | pending | multipart/session adapters |
+| Format | Staging content | Generated metadata | Source |
+| --- | --- | --- | --- |
+| Raw | yes | n/a | built in |
+| Maven 2 | yes | `maven-metadata.xml` | `MavenStagingContentAdapter` |
+| npm | yes | packument | `NpmStagingContentAdapter` |
+| PyPI | yes | simple index | `PypiStagingContentAdapter` |
+| Helm | yes | `index.yaml` | `HelmStagingContentAdapter` |
+| NuGet | yes | n/a | `NugetStagingContentAdapter` |
+| RubyGems | yes | n/a | `RubygemsStagingContentAdapter` |
+| Cargo | yes | n/a | `CargoStagingContentAdapter` |
+| Swift | yes | n/a | `SwiftStagingContentAdapter` |
+| Pub | yes | n/a | `PubStagingContentAdapter` |
+| Composer | yes | n/a | `ComposerStagingContentAdapter` |
+| Conan | yes | n/a | `ConanStagingContentAdapter` |
+| Terraform | yes | n/a | `TerraformStagingContentAdapter` |
+| Go | yes | n/a | `GoStagingContentAdapter` |
+| Conda | yes | n/a | `CondaStagingContentAdapter` |
+| Ansible | yes | n/a | `AnsibleStagingContentAdapter` |
+| Git LFS | yes | n/a | `GitLfsStagingContentAdapter` |
+| Yum | yes | index regeneration pending | `YumStagingContentAdapter` |
+| APT | yes | index regeneration pending | `AptStagingContentAdapter` |
+| Alpine | yes | index regeneration pending | `AlpineStagingContentAdapter` |
+| R | yes | index regeneration pending | `RStagingContentAdapter` |
+| Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
+| Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
+| Open VSX | yes | extension JSON view | `feat/staging-openvsx` |
+| Hugging Face | n/a | n/a | proxy-only format, no hosted writes yet |
 
 Current limitations:
 
-- A repository is accepted only when its format has a `StagingContentAdapter`. Raw is built in;
-  Arch and Open VSX adapters are delivered on their dedicated branches. Other formats return a
-  clear error until their adapter exists.
-- Group membership changes are represented by the schema direction but not yet exposed by the API.
-- There is no background expiry worker yet; expired sessions reject writes and promotion but keep
-  their staged blobs until an operator cancels the session.
+- Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
+  and cross-format members are rejected during preflight.
+- Yum, APT, Alpine and R stage package content correctly but their generated repository indexes are
+  still rebuilt from live content only; promotion therefore republishes packages without refreshing
+  the index until that follow-up lands.
+- An expired session is cancelled by the sweeper and its staged blob references are released; the
+  session row stays visible for reporting until an operator deletes it.
 - Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
   atomically instead of overwriting the winner.
 

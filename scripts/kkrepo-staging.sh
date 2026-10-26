@@ -38,6 +38,7 @@ Commands:
   compensate <session>
   report <session>
   cancel <session>
+  delete <session>
   metrics
 
 Examples:
@@ -80,7 +81,9 @@ case "$cmd" in
       fi
     done
     body=$(printf '{"name":"%s","repositories":%s,"approvalRequired":%s}' \
-      "$name" "$(json_array "${repositories[@]:-}")" "$approval")
+      "$name" \
+      "$(if [[ ${#repositories[@]} -eq 0 ]]; then printf '[]'; else json_array "${repositories[@]}"; fi)" \
+      "$approval")
     "${CURL[@]}" -X POST -H 'Content-Type: application/json' \
       -d "$body" "$BASE/internal/staging/sessions"
     ;;
@@ -134,6 +137,9 @@ case "$cmd" in
     ;;
   cancel)
     "${CURL[@]}" -X POST "$(session_path "$1")/cancel"
+    ;;
+  delete)
+    "${CURL[@]}" -X DELETE "$(session_path "$1")"
     ;;
   metrics)
     "${CURL[@]}" "$BASE/internal/staging/metrics"
