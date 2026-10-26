@@ -3,6 +3,7 @@ package com.github.klboke.kkrepo.server.routing.builtin;
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
 import com.github.klboke.kkrepo.server.staging.StagingHttpSupport;
+import com.github.klboke.kkrepo.server.staging.StagingService;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
@@ -72,6 +73,7 @@ import com.github.klboke.kkrepo.server.pypi.PypiResponse;
 import com.github.klboke.kkrepo.server.pub.PubExceptions;
 import com.github.klboke.kkrepo.server.pub.PubGroupService;
 import com.github.klboke.kkrepo.server.pub.PubHostedService;
+import com.github.klboke.kkrepo.server.pub.PubStagingService;
 import com.github.klboke.kkrepo.server.pub.PubProxyService;
 import com.github.klboke.kkrepo.server.raw.RawGroupService;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
@@ -158,6 +160,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   private final CargoProxyService cargoProxy;
   private final CargoGroupService cargoGroup;
   private final PubHostedService pubHosted;
+  private PubStagingService pubStaging;
   private final PubProxyService pubProxy;
   private final PubGroupService pubGroup;
   private final ComposerHostedService composerHosted;
@@ -245,6 +248,11 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Autowired(required = false)
   public void setStagingHttpSupport(StagingHttpSupport stagingHttp) {
     this.stagingHttp = stagingHttp;
+  }
+
+  @Autowired(required = false)
+  public void setPubStagingService(PubStagingService pubStaging) {
+    this.pubStaging = pubStaging;
   }
 
   @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -1462,6 +1470,13 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
           yield pubHosted.initPublish(runtime, baseUrl, requestUserId(request), requestApiKeyId(request), headOnly);
         }
         if (path.kind() == PubPath.Kind.PUBLISH_FINALIZE) {
+          String stagingHeader = request.getHeader(StagingService.HEADER);
+          if (pubStaging != null && stagingHeader != null && !stagingHeader.isBlank()) {
+            yield pubStaging.finalizeStaged(
+                runtime, path.sessionId(), stagingHeader.trim(), requestUserId(request),
+                requestApiKeyId(request), ClientAddress.from(request),
+                requestPermissionSubject(request), headOnly);
+          }
           yield pubHosted.finalizeUpload(runtime, path.sessionId(), requestUserId(request),
               requestApiKeyId(request), request.getHeader(HttpHeaders.USER_AGENT), headOnly);
         }
