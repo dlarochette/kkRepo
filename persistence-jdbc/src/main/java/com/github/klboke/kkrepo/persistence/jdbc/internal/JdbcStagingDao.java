@@ -386,6 +386,11 @@ public class JdbcStagingDao implements StagingDao {
   }
 
   @Override
+  public int deleteSession(long sessionId) {
+    return jdbcTemplate.update("DELETE FROM staging_session WHERE id = ?", sessionId);
+  }
+
+  @Override
   public long insertPromotion(StagingPromotionRecord record) {
     return JdbcInserts.insert(jdbcTemplate, """
         INSERT INTO staging_promotion

@@ -105,6 +105,8 @@ public interface StagingDao {
 
   int deleteItems(long sessionId);
 
+  int deleteSession(long sessionId);
+
   long insertPromotion(StagingPromotionRecord record);
 
   Optional<StagingPromotionRecord> findPromotion(long promotionId);

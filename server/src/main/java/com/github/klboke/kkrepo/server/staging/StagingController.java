@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -53,6 +54,13 @@ public class StagingController {
   public StagingService.StagingSessionView get(
       @PathVariable("id") long id, HttpServletRequest servlet) {
     return staging.get(id, subject(servlet));
+  }
+
+  @DeleteMapping("/sessions/{id}")
+  public ResponseEntity<Void> delete(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    staging.delete(id, subject(servlet), ClientAddress.from(servlet));
+    return ResponseEntity.noContent().build();
   }
 
   @PatchMapping("/sessions/{id}")
