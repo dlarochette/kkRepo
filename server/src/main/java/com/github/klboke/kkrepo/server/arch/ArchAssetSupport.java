@@ -43,6 +43,19 @@ final class ArchAssetSupport {
       long size,
       String actor,
       String ip) {
+    ComponentRecord component = component(runtime, inspected, md5, sha1, sha256);
+    hosted.putInternalWithComponentFileAtBrowsePath(
+        runtime, path, file, ArchMediaTypes.forPackage(path), component.attributes(), actor, ip,
+        component, path);
+    return component;
+  }
+
+  ComponentRecord component(
+      RepositoryRuntime runtime,
+      ArchPackageInspector.Inspected inspected,
+      String md5,
+      String sha1,
+      String sha256) {
     ArchDesc desc = inspected.desc();
     String versionKey = desc.version() + "@" + desc.architecture();
     Map<String, Object> attributes = new LinkedHashMap<>();
@@ -62,7 +75,7 @@ final class ArchAssetSupport {
     attributes.put("archUrl", desc.url());
     attributes.put("archDesc", desc.render());
     attributes.put("archCompression", inspected.filename().compression());
-    ComponentRecord component = new ComponentRecord(
+    return new ComponentRecord(
         null,
         runtime.id(),
         RepositoryFormat.ARCH,
@@ -73,10 +86,6 @@ final class ArchAssetSupport {
         PersistenceHashes.componentCoordinateHash(null, desc.name(), versionKey),
         java.util.Collections.unmodifiableMap(attributes),
         Instant.now());
-    hosted.putInternalWithComponentFileAtBrowsePath(
-        runtime, path, file, ArchMediaTypes.forPackage(path), attributes, actor, ip,
-        component, path);
-    return component;
   }
 
   MavenResponse serve(RepositoryRuntime runtime, String path, boolean headOnly) {
