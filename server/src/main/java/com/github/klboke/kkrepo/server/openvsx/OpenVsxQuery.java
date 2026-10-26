@@ -42,7 +42,7 @@ public record OpenVsxQuery(
    * The gallery sends search terms, publisher, extension id/name and paging in the JSON body
    * rather than in the URL, so ignoring it makes read-only discovery return the wrong page.
    */
-  OpenVsxQuery withVscodeBody(byte[] body, ObjectMapper objectMapper) {
+  public OpenVsxQuery withVscodeBody(byte[] body, ObjectMapper objectMapper) {
     if (body == null || body.length == 0) return this;
     try {
       JsonNode root = objectMapper.readTree(body);
