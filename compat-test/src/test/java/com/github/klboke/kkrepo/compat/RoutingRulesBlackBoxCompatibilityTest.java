@@ -54,6 +54,11 @@ class RoutingRulesBlackBoxCompatibilityTest {
       check(e, "PUT", "/repository/" + upstream + "/blocked/component/1.0/component-1.0.jar", "upstream", 201);
       check(e, "PUT", "/repository/" + fallback + "/blocked/component/1.0/component-1.0.jar", "fallback", 201);
       check(e, "PUT", "/repository/" + upstream + "/allowed/component/1.0/component-1.0.jar", "allowed", 201);
+      if (!e.nexus && e.format.equals("raw")) {
+        check(e, "PUT", "/repository/" + upstream + "/allowed;private/item.jar", "private", 201);
+        check(e, "PUT", "/repository/" + fallback + "/allowed;private/item.jar", "fallback", 201);
+        check(e, "PUT", "/repository/" + upstream + "/allowed/item;public.jar", "public", 201);
+      }
       // The server's upstream address may differ from the host-side test client's address.
       String upstreamBase = e.nexus ? "http://localhost:8081"
           : CompatDefaults.setting("compat.routingRules.kkrepoUpstreamBaseUrl",
@@ -61,6 +66,10 @@ class RoutingRulesBlackBoxCompatibilityTest {
       String remote = CompatDefaults.stripTrailingSlash(upstreamBase) + "/repository/" + upstream + "/";
       e.create(proxy, "proxy", remote, rule, List.of());
       e.create(group, "group", null, null, List.of(proxy, fallback));
+      if (!e.nexus && e.format.equals("raw")) {
+        check(e, "GET", "/repository/" + proxy + "/allowed;private/item.jar", null, 200);
+        assertEquals("private", check(e, "GET", "/repository/" + group + "/allowed;private/item.jar", null, 200).body());
+      }
       assertEquals("upstream", check(e, "GET", "/repository/" + proxy + "/blocked/component/1.0/component-1.0.jar", null, 200).body());
       assertEquals("upstream", check(e, "GET", "/repository/" + group + "/blocked/component/1.0/component-1.0.jar", null, 200).body());
       check(e, "DELETE", rules + "/" + rule, null, 400);
@@ -79,6 +88,13 @@ class RoutingRulesBlackBoxCompatibilityTest {
       assertEquals("fallback", check(e, "GET", "/repository/" + group + "/blocked/component/1.0/component-1.0.jar", null, 200).body());
       assertEquals("allowed", check(e, "GET", "/repository/" + proxy + "/allowed/component/1.0/component-1.0.jar", null, 200).body());
       check(e, "PUT", rules + "/" + rule, rule(rule, "ALLOW", List.of("/allowed/.*\\.jar")), 204);
+      if (!e.nexus && e.format.equals("raw")) {
+        // Raw handlers preserve semicolons as asset data, unlike MVC PyPI index paths.
+        check(e, "GET", "/repository/" + proxy + "/allowed;private/item.jar", null, 403);
+        check(e, "HEAD", "/repository/" + proxy + "/allowed;private/item.jar", null, 403);
+        assertEquals("fallback", check(e, "GET", "/repository/" + group + "/allowed;private/item.jar", null, 200).body());
+        assertEquals("public", check(e, "GET", "/repository/" + proxy + "/allowed/item;public.jar", null, 200).body());
+      }
       check(e, "GET", "/repository/" + proxy + "/blocked/component/1.0/component-1.0.jar", null, 403);
       check(e, "GET", "/repository/" + proxy + "/allowed/component/1.0/component-1.0.jar?x=1", null, 403);
       check(e, "GET", "/repository/" + proxy + "/allowed/component/1.0/component-1.0.jar", null, 200);
@@ -120,7 +136,7 @@ class RoutingRulesBlackBoxCompatibilityTest {
     void removeRepository(String name) throws Exception {
       if (!nexus) {
         // Explicit source also removes Maven group-owned cache assets, not member contents.
-        for (String path : List.of("blocked", "allowed")) {
+        for (String path : List.of("blocked", "allowed", "allowed;private")) {
           HttpResponse<String> removed = send("DELETE", "/internal/browse/" + name
               + "?path=" + path + "&source=" + name, null);
           assertTrue(removed.statusCode() == 200 || removed.statusCode() == 404, removed.body());

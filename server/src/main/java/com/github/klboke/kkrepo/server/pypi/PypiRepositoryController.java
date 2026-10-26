@@ -98,7 +98,7 @@ public class PypiRepositoryController {
 
   private RepositoryRuntime resolve(String name, HttpServletRequest request) {
     RepositoryRuntime runtime = resolve(name);
-    return routingPolicy == null ? runtime : routingPolicy.prepareRepository(runtime, request);
+    return routingPolicy == null ? runtime : routingPolicy.prepareMvcRepository(runtime, request);
   }
 
   private RepositoryRuntime resolveHosted(String name) {

@@ -37,11 +37,21 @@ public class RepositoryRoutingPolicy {
   private final RoutingRuleDao rules;
   public RepositoryRoutingPolicy(RoutingRuleDao rules) { this.rules = rules; }
 
-  /** Interpret the whole MVC path before locating the repository boundary. */
+  /** Manual protocol handlers retain semicolons in asset paths. */
   public RepositoryRuntime prepareRepository(RepositoryRuntime runtime, HttpServletRequest request) {
+    return prepareRepository(runtime, request, false);
+  }
+
+  /** MVC path variables remove literal matrix parameters before resolving a resource. */
+  public RepositoryRuntime prepareMvcRepository(RepositoryRuntime runtime, HttpServletRequest request) {
+    return prepareRepository(runtime, request, true);
+  }
+
+  private RepositoryRuntime prepareRepository(
+      RepositoryRuntime runtime, HttpServletRequest request, boolean mvc) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
-    String uri = matchingPath(request.getRequestURI());
-    String prefix = matchingPath(request.getContextPath() + RepositoryUrlPrefix.path(request));
+    String uri = matchingPath(request.getRequestURI(), mvc);
+    String prefix = matchingPath(request.getContextPath() + RepositoryUrlPrefix.path(request), mvc);
     if (!uri.startsWith(prefix)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid repository path");
     int separator = uri.indexOf('/', prefix.length());
     return prepareMatchedPath(runtime, separator < 0 ? "/" : uri.substring(separator), request);
@@ -49,7 +59,7 @@ public class RepositoryRoutingPolicy {
 
   public RepositoryRuntime prepare(RepositoryRuntime runtime, String path, HttpServletRequest request) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
-    return prepareMatchedPath(runtime, matchingPath(path), request);
+    return prepareMatchedPath(runtime, matchingPath(path, false), request);
   }
 
   private RepositoryRuntime prepareMatchedPath(RepositoryRuntime runtime, String path, HttpServletRequest request) {
@@ -71,15 +81,16 @@ public class RepositoryRoutingPolicy {
     return project(runtime, (Context) request.getAttribute(CONTEXT));
   }
 
-  private static String matchingPath(String raw) {
+  private static String matchingPath(String raw, boolean mvc) {
     try {
-      // Validate raw bytes without re-decoding MVC's output. Matrix parameters are
-      // removed before decoding; encoded semicolons and separators remain segment data.
+      // Strip matrix parameters only for MVC consumers. Manual protocol handlers
+      // retain semicolons, so their policy must evaluate that same asset identity.
       UriPathDecoder.decodeComponent(raw);
       StringBuilder mvcPath = new StringBuilder();
       for (PathContainer.Element element : PathContainer.parsePath(raw).elements()) {
         mvcPath.append(element instanceof PathContainer.PathSegment segment
-            ? segment.valueToMatch().replace("/", "%2F") : element.value());
+            ? (mvc ? segment.valueToMatch() : UriPathDecoder.decodeComponent(segment.value()))
+                .replace("/", "%2F") : element.value());
       }
       return canonicalPath(mvcPath.toString());
     } catch (IllegalArgumentException invalid) {

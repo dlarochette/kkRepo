@@ -124,10 +124,10 @@ class RepositoryRoutingPolicyTest {
     RepositoryRuntime group = runtime(3, RepositoryType.GROUP).withMembers(List.of(proxy, hosted));
     when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/simple/private/.*")));
     assertThrows(RepositoryRoutingPolicy.Blocked.class,
-        () -> policy.prepare(proxy, "/simple;x=1/private;x=2/", request()));
-    assertEquals(List.of(hosted), policy.prepare(group, "/simple/private;x=2/", request()).members());
-    assertSame(proxy, policy.prepare(proxy, "/simple/private%3Bx=2/", request()));
-    assertSame(proxy, policy.prepare(proxy, "/simple/private%253Bx=2/", request()));
+        () -> policy.prepareMvcRepository(proxy, mvcRequest("/simple;x=1/private;x=2/")));
+    assertEquals(List.of(hosted), policy.prepareMvcRepository(group, mvcRequest("/simple/private;x=2/")).members());
+    assertSame(proxy, policy.prepareMvcRepository(proxy, mvcRequest("/simple/private%3Bx=2/")));
+    assertSame(proxy, policy.prepareMvcRepository(proxy, mvcRequest("/simple/private%253Bx=2/")));
   }
 
   @Test void repositoryBoundaryUsesDecodedMvcSegmentsIncludingCustomPrefixAndContext() {
@@ -138,10 +138,16 @@ class RepositoryRoutingPolicyTest {
     new com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix("/custom/repos")
         .onStartup(request.getServletContext());
     request.setRequestURI("/ctx/custom;x=1/%72epos/%74est;y=2/%70rivate/file");
-    assertThrows(RepositoryRoutingPolicy.Blocked.class, () -> policy.prepareRepository(proxy, request));
+    assertThrows(RepositoryRoutingPolicy.Blocked.class, () -> policy.prepareMvcRepository(proxy, request));
     var opaque = request();
     opaque.setRequestURI("/repository/test/%2570rivate/file");
     assertSame(proxy, policy.prepareRepository(proxy, opaque));
+  }
+
+  private MockHttpServletRequest mvcRequest(String path) {
+    var request = request();
+    request.setRequestURI("/repository/test" + path);
+    return request;
   }
 
   private Binding binding(String mode, String... matchers) {

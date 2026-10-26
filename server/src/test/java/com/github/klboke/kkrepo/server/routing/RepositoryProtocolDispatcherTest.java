@@ -11,6 +11,8 @@ import static org.mockito.Mockito.when;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryType;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.server.maven.MavenExceptions;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
@@ -25,6 +27,29 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 class RepositoryProtocolDispatcherTest {
+  @Test
+  void routingRulesPreserveSemicolonsConsumedByRawHandlers() {
+    RepositoryRuntime runtime = runtime(RepositoryFormat.RAW, RepositoryType.PROXY);
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(
+        new RoutingRuleDao.Binding(1,
+            new RoutingRuleDao.Rule(
+                1, "public", "", "ALLOW", List.of("/public/.*")))));
+    for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+      RecordingHandler raw = handler(RepositoryProtocolRoute.anyPath(
+          RepositoryFormat.RAW, RepositoryType.PROXY, method, 0), ResponseEntity.ok().build());
+      var dispatcher = dispatcher(runtime, raw);
+      dispatcher.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+      assertThrows(RepositoryRoutingPolicy.Blocked.class,
+          () -> dispatcher.dispatchRead("repo",
+              request(method.name(), "/repository/repo/public;private/a"), method));
+      assertEquals(0, raw.invocations);
+      assertEquals(200, dispatcher.dispatchRead("repo",
+          request(method.name(), "/repository/repo/public/a;b"), method).getStatusCode().value());
+      assertEquals("public/a;b", raw.lastRequest.path());
+    }
+  }
+
   @Test
   void exactPathWinsOverCatchAllForTheSameProtocol() throws Exception {
     RepositoryRuntime runtime = runtime(RepositoryFormat.HELM, RepositoryType.HOSTED);
