@@ -5476,7 +5476,11 @@ PY
   NEXUS_COMPAT_AUTH="$NEXUS_USER:$NEXUS_PASSWORD" KKREPO_COMPAT_AUTH="$(auth)" \
     python3 "$PROJECT_ROOT/compat-test/scripts/routing-rules-migration.py" verify \
       --nexus "$NEXUS_URL" --kkrepo "$KKREPO_URL" --prefix "rr-$TAG_SAFE_LC"
-  if [[ -n "$KKREPO_SECONDARY_URL" ]]; then
+  # The matrix supplies a secondary URL on every row, but only the Swift
+  # restart/resume rows start a shared-database read replica.
+  if swift_migration_enabled && [[ -n "$KKREPO_SECONDARY_URL" ]]; then
+    wait_for_http "kkrepo routing-rule migration read replica" \
+      "$KKREPO_SECONDARY_URL/internal/repositories?purpose=admin" "$(auth)"
     NEXUS_COMPAT_AUTH="$NEXUS_USER:$NEXUS_PASSWORD" KKREPO_COMPAT_AUTH="$(auth)" \
       python3 "$PROJECT_ROOT/compat-test/scripts/routing-rules-migration.py" verify \
         --nexus "$NEXUS_URL" --kkrepo "$KKREPO_SECONDARY_URL" --prefix "rr-$TAG_SAFE_LC"
