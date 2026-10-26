@@ -27,6 +27,7 @@ import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
 import com.github.klboke.kkrepo.server.security.SecurityManagementService;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -67,6 +68,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class StagingService {
   public static final String HEADER = "X-KkRepo-Staging";
+  public static final String TOKEN_HEADER = "X-KkRepo-Staging-Token";
   public static final String BLOB_OWNER_TYPE = "staging_item";
   private static final Pattern SESSION_NAME =
       Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$");
@@ -90,6 +92,7 @@ public class StagingService {
   private final TransactionTemplate transaction;
   private final Map<RepositoryFormat, StagingContentAdapter> contentAdapters;
   private final int maxItems;
+  private StagingCredentialService credentials;
 
   public StagingService(
       StagingDao staging,
@@ -122,12 +125,28 @@ public class StagingService {
     this.maxItems = Math.max(1, maxItems);
   }
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setStagingCredentialService(StagingCredentialService credentials) {
+    this.credentials = credentials;
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Session lifecycle
   // ---------------------------------------------------------------------------------------------
 
   @Transactional
   public StagingSessionView create(
+      CreateSessionRequest request, PermissionSubject actor, String remoteAddr) {
+    return createInternal(request, actor, remoteAddr).session();
+  }
+
+  @Transactional
+  public CreateResult createWithCredential(
+      CreateSessionRequest request, PermissionSubject actor, String remoteAddr) {
+    return createInternal(request, actor, remoteAddr);
+  }
+
+  private CreateResult createInternal(
       CreateSessionRequest request, PermissionSubject actor, String remoteAddr) {
     String name = request == null ? null : request.name();
     if (name == null || !SESSION_NAME.matcher(name.trim()).matches()) {
@@ -171,9 +190,56 @@ public class StagingService {
       staging.addRepository(id, target.id(), target.format().id());
     }
     StagingSessionRecord session = staging.findSessionById(id).orElseThrow();
+    StagingCredentialService.IssuedCredential issued = null;
+    if (credentials != null) {
+      issued = credentials.issue(session, actor);
+      if (!staging.updateSessionMetadata(
+          session.id(), session.revision(), session.expiresAt(),
+          credentials.withToken(session, issued))) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
+      }
+      session = staging.findSessionById(session.id()).orElseThrow();
+    }
     audit(actor, remoteAddr, "staging-create", session,
         "created", Map.of("repositories", repositoryNames));
-    return view(session);
+    return new CreateResult(view(session), issued == null ? null : issued.token());
+  }
+
+  @Transactional
+  public StagingCredentialService.IssuedCredential rotateCredential(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord session = lockOwnedSession(sessionId, actor);
+    requireState(session, Set.of(StagingDao.SESSION_OPEN),
+        "Staging credentials can only be rotated while the session is OPEN");
+    requireNotExpired(session);
+    if (credentials == null) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "Staging credentials are unavailable");
+    }
+    credentials.revoke(session);
+    StagingCredentialService.IssuedCredential issued = credentials.issue(session, actor);
+    if (!staging.updateSessionMetadata(
+        session.id(), session.revision(), session.expiresAt(),
+        credentials.withToken(session, issued))) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
+    }
+    audit(actor, remoteAddr, "staging-credential", session, "rotated", Map.of());
+    return issued;
+  }
+
+  @Transactional
+  public StagingReport commit(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    preflight(sessionId, actor, remoteAddr);
+    return promote(sessionId, actor, remoteAddr);
+  }
+
+  @Transactional
+  public StagingSessionView rollback(
+      long sessionId, PermissionSubject actor, String remoteAddr) {
+    return cancel(sessionId, actor, remoteAddr);
   }
 
   @Transactional
@@ -248,6 +314,7 @@ public class StagingService {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
     }
+    if (credentials != null) credentials.revoke(session);
     audit(actor, remoteAddr, "staging-close", session, "frozen", Map.of());
     return view(staging.findSessionById(session.id()).orElseThrow());
   }
@@ -274,6 +341,7 @@ public class StagingService {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Staging session changed concurrently; retry");
     }
+    if (credentials != null) credentials.revoke(session);
     audit(actor, remoteAddr, "staging-cancel", session, "cancelled", Map.of());
     return view(staging.findSessionById(session.id()).orElseThrow());
   }
@@ -299,6 +367,53 @@ public class StagingService {
     StagingSessionRecord session = findSession(sessionId);
     requireOwnerOrAdmin(session, actor);
     return staging.listItems(session.id()).stream().map(StagingItemView::of).toList();
+  }
+
+  @Transactional(readOnly = true)
+  public StagingSessionView getByKey(String sessionKey, PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireOwnerOrAdmin(session, actor);
+    return view(session);
+  }
+
+  @Transactional(readOnly = true)
+  public List<StagingItemView> itemsByKey(String sessionKey, PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireOwnerOrAdmin(session, actor);
+    requireNotExpired(session);
+    return staging.listItems(session.id()).stream().map(StagingItemView::of).toList();
+  }
+
+  @Transactional(readOnly = true)
+  public Optional<StagingItemView> itemByKey(
+      String sessionKey, long itemId, PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireOwnerOrAdmin(session, actor);
+    requireNotExpired(session);
+    return staging.listItems(session.id()).stream()
+        .filter(item -> item.id() == itemId)
+        .findFirst()
+        .map(StagingItemView::of);
+  }
+
+  @Transactional
+  public int deleteItemByKey(
+      String sessionKey, long itemId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, true);
+    requireOwnerOrAdmin(session, actor);
+    requireState(session, WRITABLE, "Staging session is not OPEN");
+    requireNotExpired(session);
+    StagingItemRecord item = staging.lockItem(itemId)
+        .filter(candidate -> candidate.sessionId() == session.id())
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Staged item not found"));
+    releaseItemBlob(item);
+    staging.deleteItem(item.id());
+    audit(actor, remoteAddr, "staging-delete", session,
+        "unstaged", Map.of(
+            "repositoryId", item.repositoryId(),
+            "path", item.logicalPath()));
+    return 1;
   }
 
   @Transactional(readOnly = true)
@@ -350,7 +465,11 @@ public class StagingService {
       return transaction.execute(status -> {
         PromotionAttempt started = beginPromotion(sessionId, actor, remoteAddr);
         attempt.set(started);
-        return applyPromotion(started, actor, remoteAddr);
+        StagingReport report = applyPromotion(started, actor, remoteAddr);
+        if (credentials != null) {
+          staging.findSessionById(sessionId).ifPresent(credentials::revoke);
+        }
+        return report;
       });
     } catch (RuntimeException error) {
       recordPromotionFailure(attempt.get(), error, actor, remoteAddr);
@@ -487,6 +606,13 @@ public class StagingService {
         .orElseThrow(() -> new ResponseStatusException(
             HttpStatus.CONFLICT, "Staged blob is no longer available for " + item.logicalPath()));
     requireBlobMatchesItem(blob, item);
+    if (adapter != null) {
+      Optional<String> promoted = adapter.promote(
+          runtime, item, blobSource(blob), actorUserId(actor), "staging");
+      if (promoted.isPresent()) {
+        return promoted.get();
+      }
+    }
     if (StagingComponents.unindexed(item.attributes())) {
       rawHosted.linkInternalBlobUnindexed(
           runtime, item.logicalPath(), blob, item.contentType(), createdBy, "staging");
@@ -635,21 +761,81 @@ public class StagingService {
       throw new MavenExceptions.MethodNotAllowed(
           "Staging writes are not supported for " + runtime.format().id() + " repositories");
     }
+    StagingContentAdapter.StagedUpload upload = adapter == null
+        ? stageRaw(runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr)
+        : adapter.stage(runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr);
+    return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
+  /** Request-aware staging entry point used for multipart publication endpoints. */
+  @Transactional
+  public StagingWriteResult putRequest(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String rawPath,
+      HttpServletRequest request,
+      PermissionSubject actor,
+      String remoteAddr) throws java.io.IOException {
+    StagingSessionRecord session = lockSessionByKey(sessionKey);
+    requireSessionWritable(session, runtime, actor);
+    StagingContentAdapter adapter = adapterFor(runtime.format());
     StagingContentAdapter.StagedUpload upload;
-    String path;
-    if (adapter != null) {
-      upload = adapter.stage(
-          runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr);
-      path = upload.logicalPath();
+    if (adapter == null) {
+      if (runtime.format() != RepositoryFormat.RAW) {
+        throw new MavenExceptions.MethodNotAllowed(
+            "Staging writes are not supported for " + runtime.format().id() + " repositories");
+      }
+      try (InputStream body = request.getInputStream()) {
+        upload = stageRaw(
+            runtime, rawPath, body, request.getContentType(), actorUserId(actor), remoteAddr);
+      }
     } else {
-      path = RawHostedService.normalizeAssetPath(rawPath);
-      AssetBlobRecord blob = rawHosted.storeStagedBlob(
-          runtime, path, body, contentType, Map.of(), actorUserId(actor), remoteAddr);
-      Map<String, Object> attributes = new LinkedHashMap<>();
-      attributes.put(StagingComponents.ATTRIBUTE,
-          StagingComponents.encode(rawComponent(runtime, path)));
-      upload = new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
+      upload = adapter.stageRequest(
+              runtime, rawPath, request, actorUserId(actor), remoteAddr)
+          .orElseGet(() -> stageAdapterStream(
+              adapter, runtime, rawPath, request, actorUserId(actor), remoteAddr));
     }
+    return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
+  private StagingContentAdapter.StagedUpload stageAdapterStream(
+      StagingContentAdapter adapter,
+      RepositoryRuntime runtime,
+      String rawPath,
+      HttpServletRequest request,
+      String actor,
+      String remoteAddr) {
+    try (InputStream body = request.getInputStream()) {
+      return adapter.stage(
+          runtime, rawPath, body, request.getContentType(), actor, remoteAddr);
+    } catch (java.io.IOException error) {
+      throw new java.io.UncheckedIOException(error);
+    }
+  }
+
+  private StagingContentAdapter.StagedUpload stageRaw(
+      RepositoryRuntime runtime,
+      String rawPath,
+      InputStream body,
+      String contentType,
+      String actor,
+      String remoteAddr) {
+    String path = RawHostedService.normalizeAssetPath(rawPath);
+    AssetBlobRecord blob = rawHosted.storeStagedBlob(
+        runtime, path, body, contentType, Map.of(), actor, remoteAddr);
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    attributes.put(StagingComponents.ATTRIBUTE,
+        StagingComponents.encode(rawComponent(runtime, path)));
+    return new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
+  }
+
+  private StagingWriteResult persistStagedUpload(
+      StagingSessionRecord session,
+      RepositoryRuntime runtime,
+      StagingContentAdapter.StagedUpload upload,
+      PermissionSubject actor,
+      String remoteAddr) {
+    String path = upload.logicalPath();
     WritePolicy policy = WritePolicy.parse(runtime.writePolicy());
     Optional<AssetRecord> live = assets.findAssetByPath(runtime.id(), path);
     if (policy == WritePolicy.DENY) {
@@ -682,7 +868,8 @@ public class StagingService {
         StagingDao.ITEM_STAGED,
         blob.blobStoreId(),
         blob.id(),
-        contentType == null || contentType.isBlank() ? blob.contentType() : contentType,
+        upload.contentType() == null || upload.contentType().isBlank()
+            ? blob.contentType() : upload.contentType(),
         blob.size(),
         blob.sha256(),
         blob.md5(),
@@ -1184,8 +1371,14 @@ public class StagingService {
     return response;
   }
 
-  private void releaseItemBlob(StagingItemRecord item) {
-    if (item.id() != null && item.assetBlobId() != null) {
+  private StagingBlobSource blobSource(AssetBlobRecord blob) {
+    BlobReference reference = BlobReferenceCodec.reference(
+        blob.blobRef(), blob.objectKey(), blob.sha256(), blob.size());
+    return () -> blobStorageRegistry.forBlobStoreId(blob.blobStoreId()).get(reference)
+        .orElseThrow(() -> new MavenExceptions.MavenNotFoundException(blob.objectKey()));
+  }
+
+  private void releaseItemBlob(StagingItemRecord item) {    if (item.id() != null && item.assetBlobId() != null) {
       blobReferences.releaseOwner(BLOB_OWNER_TYPE, item.id());
     }
   }
@@ -1377,6 +1570,9 @@ public class StagingService {
 
   public record StagingWriteResult(
       long sessionId, long itemId, String action, String sha256, long size) {
+  }
+
+  public record CreateResult(StagingSessionView session, String token) {
   }
 
   private record ItemValidation(StagingItemRecord item, String status, String message) {
