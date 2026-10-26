@@ -1096,6 +1096,29 @@ public class StagingService {
     return adapter != null && adapter.supportsPublication(rawPath);
   }
 
+  /** Returns staged Docker tags for one image in the session view. */
+  @Transactional(readOnly = true)
+  public List<String> stagedDockerTags(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String imageName,
+      PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireSessionReadable(session, runtime, actor);
+    String prefix = "manifest/" + imageName + "/";
+    return staging.listItems(session.id()).stream()
+        .filter(item -> item.repositoryId() == runtime.id())
+        .filter(item -> item.format() == RepositoryFormat.DOCKER)
+        .filter(item -> !item.action().equals(StagingDao.ITEM_DELETE))
+        .map(StagingItemRecord::logicalPath)
+        .filter(path -> path.startsWith(prefix))
+        .map(path -> path.substring(prefix.length()))
+        .filter(tag -> !tag.isBlank() && !tag.contains("/"))
+        .distinct()
+        .sorted()
+        .toList();
+  }
+
   @Transactional(readOnly = true)
   public Optional<MavenResponse> getStagedContent(
       RepositoryRuntime runtime,
@@ -1138,6 +1161,54 @@ public class StagingService {
       return Optional.of(MavenResponse.noBody(404));
     }
     return Optional.of(stagedResponse(runtime, item, blob, path, headOnly));
+  }
+
+  /** Returns the staged item/blob identity without materializing a protocol response. */
+  @Transactional(readOnly = true)
+  public Optional<StagedContent> findStagedContent(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String rawPath,
+      PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireSessionReadable(session, runtime, actor);
+    StagingContentAdapter adapter = adapterFor(runtime.format());
+    if (adapter == null) {
+      return Optional.empty();
+    }
+    Optional<String> normalized = adapter.normalizePath(rawPath);
+    if (normalized.isEmpty()) {
+      return Optional.empty();
+    }
+    Optional<StagingItemRecord> staged = staging.findItem(
+        session.id(), runtime.id(), PersistenceHashes.pathHash(normalized.get()));
+    if (staged.isEmpty()) {
+      return Optional.empty();
+    }
+    StagingItemRecord item = staged.get();
+    AssetBlobRecord blob = item.assetBlobId() == null
+        ? null
+        : assets.findBlobById(item.assetBlobId()).orElse(null);
+    return Optional.of(new StagedContent(item, blob));
+  }
+
+  /** Reads a small staged payload, used by protocol boundaries that need raw bytes. */
+  public byte[] readStagedBody(AssetBlobRecord blob) {
+    if (blob == null) {
+      throw new MavenExceptions.MavenNotFoundException("Staged blob is missing");
+    }
+    BlobReference reference = BlobReferenceCodec.reference(
+        blob.blobRef(), blob.objectKey(), blob.sha256(), blob.size());
+    try (InputStream body = blobStorageRegistry.forBlobStoreId(blob.blobStoreId())
+        .get(reference)
+        .orElseThrow(() -> new MavenExceptions.MavenNotFoundException(blob.objectKey()))) {
+      return body.readAllBytes();
+    } catch (java.io.IOException error) {
+      throw new java.io.UncheckedIOException(error);
+    }
+  }
+
+  public record StagedContent(StagingItemRecord item, AssetBlobRecord blob) {
   }
 
   @Transactional
@@ -1228,7 +1299,6 @@ public class StagingService {
    * Retains an already uploaded blob for a staging session. Promotion only releases this staging
    * ownership; the owning format is responsible for making the blob reachable.
    */
-
   @Transactional
   public StagingWriteResult stageExternalBlob(
       RepositoryRuntime runtime,
@@ -1251,6 +1321,23 @@ public class StagingService {
     StagingContentAdapter.StagedUpload upload = new StagingContentAdapter.StagedUpload(
         blob, logicalPath, contentType, attributes == null ? Map.of() : attributes);
     return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
+  /** Retains a completed Docker blob for the session. */
+  @Transactional
+  public StagingWriteResult stageDockerBlob(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String digest,
+      long blobId,
+      PermissionSubject actor,
+      String remoteAddr) {
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    attributes.put("dockerBlob", true);
+    attributes.put("dockerDigest", digest);
+    return stageExternalBlob(
+        runtime, sessionKey, "blob/" + digest, blobId, "application/octet-stream",
+        attributes, actor, remoteAddr);
   }
 
   private StagingWriteResult persistStagedUpload(

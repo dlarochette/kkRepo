@@ -190,7 +190,7 @@ public class DockerUploadService {
       uploadDao.completeSession(uuid, expectedDigest.value(), expectedDigest.algorithm());
       recordUpload(runtime, "complete", "stored");
       recordDigest(runtime, "upload_blob", "success");
-      return new CompleteResult(expectedDigest, stored.blob().size());
+      return new CompleteResult(expectedDigest, stored.blob().size(), stored.blob().id());
     } catch (DockerProtocolException e) {
       recordUpload(runtime, "complete", "error");
       if (e.code() == DockerErrorCode.DIGEST_INVALID) {
@@ -348,7 +348,10 @@ public class DockerUploadService {
     }
   }
 
-  public record CompleteResult(DockerDigest digest, long size) {
+  public record CompleteResult(DockerDigest digest, long size, Long blobId) {
+    public CompleteResult(DockerDigest digest, long size) {
+      this(digest, size, null);
+    }
   }
 
   private record ChunkUpload(String blobRef, String objectKey, String sha256, long size) {
