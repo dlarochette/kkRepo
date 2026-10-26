@@ -25,6 +25,8 @@ npm rules reuse `NpmPathParser` package identities, including its whitespace nor
 
 PyPI project-index decisions use `PypiPaths.indexPath()`, so case, separator normalization and the optional trailing slash cannot select a different policy than the cached index. Live kkRepo checks cover these aliases and MVC matrix parameters. Dispatcher decisions reuse authentication's normalized paths without decoding again, including Terraform paths after URL-token removal. Terraform archive bindings are usable only while their source remains in the projected group; otherwise retrieval continues to allowed members. Swift likewise treats a policy-denied pinned release as unavailable and resolves an allowed group member.
 
+Swift scope/package keys and Cargo download crate names use their protocol parsers' canonical identities. Pub valid trailing-slash aliases and NuGet flat-container/registration index package IDs likewise match the resource actually read. Dispatcher tests cover GET/HEAD and group exclusion; live kkRepo cases require denial before upstream access. Pub rejects uppercase package names at parsing time. Raw asset case and opaque NuGet package/leaf URLs remain unchanged. These alias checks extend kkRepo regression coverage and do not claim additional Nexus format support.
+
 Repository updates read the existing binding under a row lock, after acquiring any explicitly requested rule lock. This keeps the rule-before-repository order used by migration and prevents partial updates from overwriting concurrent assignments or removals. MySQL and PostgreSQL contract tests establish a stale transaction snapshot while another transaction assigns a rule, then verify that the locking read sees and preserves the committed binding.
 
 ## Configuration migration

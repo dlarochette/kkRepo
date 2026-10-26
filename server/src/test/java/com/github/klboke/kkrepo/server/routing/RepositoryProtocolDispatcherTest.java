@@ -28,6 +28,56 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class RepositoryProtocolDispatcherTest {
   @Test
+  void packageProtocolsMatchTheirCanonicalNamesWithoutLowercasingRawAssets() {
+    record Case(RepositoryFormat format, List<String> matchers, List<String> aliases, String allowed) {}
+    var cases = List.of(
+        new Case(RepositoryFormat.SWIFT, List.of("/private/.*"), List.of(
+            "PRIVATE/pkg/1.0.0.zip", "PRIVATE/pkg/1.0.0.json", "PriVaTe/PKG/1.0.0/Package.swift", "PR%49VATE/pkg.json"), "public/PKG/1.0.0.zip"),
+        new Case(RepositoryFormat.PUB, List.of("/api/packages/private", "/api/packages/private/versions/1.0.0",
+            "/api/archives/private-1.0.0.tar.gz", "/packages/private/versions/1.0.0.tar.gz", "/private/1.0.0/.*",
+            "/api/package-names", "/api/package-name-completion-data"), List.of("api/packages/private/",
+            "api/packages/private/versions/1.0.0/", "api/archives/private-1.0.0.tar.gz/",
+            "packages/private/versions/1.0.0.tar.gz/", "private/1.0.0/private-1.0.0.tar.gz/",
+            "private/1.0.0/version.json/", "api/package-names/", "api/package-name-completion-data/"), "api/packages/public"),
+        new Case(RepositoryFormat.CARGO, List.of("/api/v1/crates/private/.*", "/crates/private/.*", "/pr/iv/private", "/config.json", "/api/v1/crates"),
+            List.of("api/v1/crates/PRIVATE/1.0.0/download", "api/v1/crates/%20PRIVATE/1.0.0/download",
+                "crates/PRIVATE/1.0.0/PRIVATE-1.0.0.crate", "crates/PRIVATE/1.0.0/download", "pr/iv/private/", "config.json/", "api/v1/crates/"), "api/v1/crates/public/1.0.0/download"),
+        new Case(RepositoryFormat.NUGET, List.of("/v3-flatcontainer/private/.*", "/v3/registration5-semver[12]/private/.*"),
+            List.of("v3-flatcontainer/PRIVATE/index.json", "v3/registration5-semver1/PRIVATE/index.json",
+                "v3/registration5-semver2/PRIVATE/index.json"), "v3-flatcontainer/public/index.json"),
+        new Case(RepositoryFormat.RAW, List.of("/private/.*"), List.of("private/file"), "PRIVATE/file"));
+    for (Case test : cases) {
+      RepositoryRuntime proxy = runtime(test.format(), RepositoryType.PROXY);
+      RepositoryRuntime group = runtime(test.format(), RepositoryType.GROUP).withMembers(List.of(proxy));
+      var rules = mock(RoutingRuleDao.class);
+      when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+          new RoutingRuleDao.Rule(1, "private", "", "BLOCK", test.matchers()))));
+      for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+        for (String alias : test.aliases()) {
+          RecordingHandler handler = handler(RepositoryProtocolRoute.anyPath(test.format(), RepositoryType.PROXY,
+              method, 0), ResponseEntity.ok().build());
+          var dispatcher = dispatcher(proxy, handler);
+          dispatcher.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+          assertThrows(RepositoryRoutingPolicy.Blocked.class,
+              () -> dispatcher.dispatchRead("repo", request(method.name(), "/repository/repo/" + alias), method),
+              test.format() + " " + alias);
+          assertEquals(0, handler.invocations);
+          assertEquals(200, dispatcher.dispatchRead("repo",
+              request(method.name(), "/repository/repo/" + test.allowed()), method).getStatusCode().value());
+          assertEquals(200, dispatcher.dispatchRead("repo",
+              request(method.name(), "/repository/repo/unknown-path"), method).getStatusCode().value());
+          RecordingHandler grouped = handler(RepositoryProtocolRoute.anyPath(test.format(), RepositoryType.GROUP,
+              method, 0), ResponseEntity.ok().build());
+          var groupDispatcher = dispatcher(group, grouped);
+          groupDispatcher.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+          groupDispatcher.dispatchRead("repo", request(method.name(), "/repository/repo/" + alias), method);
+          assertTrue(grouped.lastRequest.runtime().members().isEmpty(), test.format() + " " + alias);
+        }
+      }
+    }
+  }
+
+  @Test
   void terraformRoutingUsesTheCredentialFreePathFromAuthentication() {
     RepositoryRuntime proxy = runtime(RepositoryFormat.TERRAFORM, RepositoryType.PROXY);
     RepositoryRuntime group = runtime(RepositoryFormat.TERRAFORM, RepositoryType.GROUP).withMembers(List.of(proxy));

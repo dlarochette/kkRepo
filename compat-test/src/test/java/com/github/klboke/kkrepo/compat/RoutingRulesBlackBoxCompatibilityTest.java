@@ -24,6 +24,41 @@ class RoutingRulesBlackBoxCompatibilityTest {
   private static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(15)).build();
 
+  @ParameterizedTest
+  @ValueSource(strings = {"swift", "pub", "cargo", "nuget"})
+  void canonicalPackageAliasesAreBlockedBeforeUpstreamAccess(String format) throws Exception {
+    assumeTrue(Boolean.parseBoolean(CompatDefaults.setting("compat.routingRules", "ROUTING_RULES_COMPAT_ENABLED").orElse("false")));
+    assumeTrue(!Boolean.getBoolean("compat.routingRules.referenceOnly"));
+    Endpoint e = new Endpoint(CompatDefaults.nexusPlusBaseUrl().orElseThrow(),
+        CompatDefaults.nexusPlusUsername().orElseThrow(), CompatDefaults.nexusPlusPassword().orElseThrow(), false, format);
+    String prefix = "rr452-" + UUID.randomUUID().toString().substring(0, 8);
+    String rule = prefix + "-rule", proxy = prefix + "-proxy", rules = "/service/rest/v1/routing-rules";
+    List<String> matchers = switch (format) {
+      case "swift" -> List.of("/private/.*");
+      case "pub" -> List.of("/api/packages/private", "/api/packages/private/versions/1.0.0");
+      case "cargo" -> List.of("/api/v1/crates/private/.*");
+      default -> List.of("/v3-flatcontainer/private/.*", "/v3/registration5-semver[12]/private/.*");
+    };
+    List<String> aliases = switch (format) {
+      case "swift" -> List.of("PRIVATE/pkg/1.0.0.zip", "PRIVATE/PKG/1.0.0/Package.swift", "PRIVATE/pkg.json");
+      case "pub" -> List.of("api/packages/private/", "api/packages/private/versions/1.0.0/");
+      case "cargo" -> List.of("api/v1/crates/PRIVATE/1.0.0/download", "api/v1/crates/%20private/1.0.0/download");
+      default -> List.of("v3-flatcontainer/PRIVATE/index.json", "v3/registration5-semver1/PRIVATE/index.json",
+          "v3/registration5-semver2/PRIVATE/index.json");
+    };
+    try {
+      check(e, "POST", rules, rule(rule, "BLOCK", matchers), 204);
+      e.create(proxy, "proxy", format.equals("swift") ? "https://github.com/" : e.upstreamBase() + "/repository/" + prefix + "-missing/", rule, List.of());
+      for (String alias : aliases) {
+        check(e, "GET", "/repository/" + proxy + "/" + alias, null, 403);
+        check(e, "HEAD", "/repository/" + proxy + "/" + alias, null, 403);
+      }
+    } finally {
+      e.removeRepository(proxy);
+      e.send("DELETE", rules + "/" + rule, null);
+    }
+  }
+
   @Test
   void pypiCanonicalProjectAliasesAreRejectedBeforeUpstreamAccess() throws Exception {
     assumeTrue(Boolean.parseBoolean(CompatDefaults.setting("compat.routingRules", "ROUTING_RULES_COMPAT_ENABLED").orElse("false")));

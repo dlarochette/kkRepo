@@ -1,18 +1,29 @@
 package com.github.klboke.kkrepo.server.routingrules;
 
 import com.github.klboke.kkrepo.core.http.UriPathDecoder;
-import com.github.klboke.kkrepo.core.RepositoryFormat;
-import com.github.klboke.kkrepo.protocol.npm.NpmPathParser;
-import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
-import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao.Rule;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.protocol.cargo.CargoCrateName;
+import com.github.klboke.kkrepo.protocol.cargo.CargoIndexPath;
+import com.github.klboke.kkrepo.protocol.cargo.CargoPathParser;
+import com.github.klboke.kkrepo.protocol.npm.NpmPathParser;
+import com.github.klboke.kkrepo.protocol.nuget.NugetPathParser;
+import com.github.klboke.kkrepo.protocol.nuget.NugetPaths;
+import com.github.klboke.kkrepo.protocol.pub.PubPackageName;
+import com.github.klboke.kkrepo.protocol.pub.PubPathParser;
+import com.github.klboke.kkrepo.protocol.pub.PubPaths;
+import com.github.klboke.kkrepo.protocol.pub.PubVersions;
+import com.github.klboke.kkrepo.protocol.swift.SwiftPackageName;
+import com.github.klboke.kkrepo.protocol.swift.SwiftPathParser;
+import com.github.klboke.kkrepo.protocol.swift.SwiftScope;
+import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -57,8 +68,87 @@ public class RepositoryRoutingPolicy {
 
   public RepositoryRuntime prepare(RepositoryRuntime runtime, String path, HttpServletRequest request) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
-    return prepareMatchedPath(runtime, runtime.format() == RepositoryFormat.NPM
-        ? npmMatchingPath(path) : matchingPath(path), request);
+    String matched;
+    try {
+      matched = switch (runtime.format()) {
+        case NPM -> npmMatchingPath(path);
+        case SWIFT -> swiftMatchingPath(path);
+        case PUB -> pubMatchingPath(path);
+        case CARGO -> cargoMatchingPath(path);
+        case NUGET -> nugetMatchingPath(path);
+        default -> matchingPath(path);
+      };
+    } catch (IllegalArgumentException invalid) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
+    }
+    return prepareMatchedPath(runtime, matched, request);
+  }
+
+  private static String swiftMatchingPath(String raw) {
+    var path = new SwiftPathParser().parse(raw);
+    if (path.scope() == null || path.name() == null) return matchingPath(raw);
+    String prefix = "/" + SwiftScope.key(path.scope()) + "/" + SwiftPackageName.key(path.name());
+    return switch (path.kind()) {
+      case RELEASE_LIST -> prefix;
+      case RELEASE_METADATA -> prefix + "/" + path.version();
+      case SOURCE_ARCHIVE -> prefix + "/" + path.version() + ".zip";
+      case MANIFEST -> prefix + "/" + path.version() + "/Package.swift";
+      default -> matchingPath(raw);
+    };
+  }
+
+  private static String pubMatchingPath(String raw) {
+    var path = new PubPathParser().parse(raw);
+    return switch (path.kind()) {
+      case PACKAGE_METADATA -> "/" + PubPaths.metadataPath(path.packageName());
+      case VERSION_METADATA -> "/" + PubPaths.versionPath(path.packageName(), path.version());
+      case VERSION_JSON -> "/" + PubPaths.versionJsonPath(path.packageName(), path.version());
+      case ARCHIVE -> {
+        String decoded = canonicalPath(UriPathDecoder.decodePath(raw).trim());
+        if (decoded.startsWith("/api/archives/")) {
+          yield "/api/archives/" + PubPackageName.require(path.packageName()) + "-"
+              + PubVersions.require(path.version()) + ".tar.gz";
+        }
+        yield "/" + (decoded.startsWith("/packages/")
+            ? PubPaths.archivePath(path.packageName(), path.version())
+            : PubPaths.nexusArchivePath(path.packageName(), path.version()));
+      }
+      case PACKAGE_NAMES -> "/api/package-names";
+      case PACKAGE_NAME_COMPLETION -> "/api/package-name-completion-data";
+      default -> matchingPath(raw);
+    };
+  }
+
+  private static String cargoMatchingPath(String raw) {
+    var path = new CargoPathParser().parse(raw);
+    return switch (path.kind()) {
+      case INDEX -> "/" + CargoIndexPath.forCrate(path.crateName());
+      case CONFIG -> "/" + CargoIndexPath.CONFIG;
+      case SEARCH -> "/api/v1/crates";
+      case DOWNLOAD -> {
+        String name = CargoCrateName.parse(path.crateName()).lower();
+        String decoded = canonicalPath(UriPathDecoder.decodePath(raw).trim()).replaceAll("/+$", "");
+        if (decoded.startsWith("/api/v1/crates/")) {
+          yield "/api/v1/crates/" + name + "/" + path.version() + "/download";
+        }
+        yield "/crates/" + name + "/" + path.version() + "/"
+            + (decoded.endsWith("/download") ? "download" : name + "-" + path.version() + ".crate");
+      }
+      default -> matchingPath(raw);
+    };
+  }
+
+  private static String nugetMatchingPath(String raw) {
+    var path = new NugetPathParser().parse(raw);
+    return switch (path.kind()) {
+      case FLAT_CONTAINER_VERSION_INDEX -> "/" + NugetPaths.flatContainerVersionIndex(
+          UriPathDecoder.decodeComponent(path.packageId()));
+      case REGISTRATION_INDEX -> "/v3/"
+          + (path.rawPath().startsWith("v3/registration5-semver2/") ? "registration5-semver2/" : "registration5-semver1/")
+          + NugetPaths.normalizePackageId(UriPathDecoder.decodeComponent(path.packageId())) + "/index.json";
+      // Package/leaf URLs are opaque upstream resources; do not lowercase those asset paths.
+      default -> matchingPath(path.rawPath());
+    };
   }
 
   private static String npmMatchingPath(String raw) {

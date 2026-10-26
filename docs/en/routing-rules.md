@@ -12,7 +12,7 @@ For example, a BLOCK rule with `/com/company/.*` prevents a Maven proxy from ser
 
 Blocked direct proxy reads return HTTP 403, including already cached content. A group skips blocked proxy members and continues in member order. Hosted repositories are unaffected. Rules match request paths; they do not inspect package metadata for vulnerabilities or remove matching entries from otherwise allowed index documents. Use artifact scanning policies for vulnerability decisions and content selectors for user-specific access grants.
 
-Matching uses the path identity consumed by the protocol. For example, PyPI `/simple/PRIVATE` matches as `/simple/private/`, npm package aliases use the parsed package name, and Terraform URL credentials are excluded. Raw filenames retain literal semicolons. The rule tester evaluates the path you enter; use the canonical protocol path when testing these cases.
+Matching uses the path identity consumed by the protocol. For example, PyPI `/simple/PRIVATE` matches as `/simple/private/`, npm package aliases use the parsed package name, and Terraform URL credentials are excluded. Swift scope/package names, Cargo crate names and NuGet metadata IDs use their canonical case; Pub accepts canonical names and removes trailing-slash aliases. Raw filenames retain case and literal semicolons. The rule tester evaluates the path you enter; use the canonical protocol path when testing these cases.
 
 The management API follows Nexus:
 

@@ -99,9 +99,10 @@ public class RepositoryProtocolDispatcher {
       if (request.getAttribute(RepositorySecurityFilter.NORMALIZED_REPOSITORY_PATH_ATTRIBUTE) instanceof String) {
         runtime = routingPolicy.prepareCanonical(runtime, path, request);
       } else {
-        runtime = runtime.format() == RepositoryFormat.NPM
-            ? routingPolicy.prepare(runtime, path, request)
-            : routingPolicy.prepareRepository(runtime, request);
+        runtime = switch (runtime.format()) {
+          case NPM, SWIFT, PUB, CARGO, NUGET -> routingPolicy.prepare(runtime, path, request);
+          default -> routingPolicy.prepareRepository(runtime, request);
+        };
       }
     }
     RouteKey key = new RouteKey(runtime.format(), runtime.type(), method);
