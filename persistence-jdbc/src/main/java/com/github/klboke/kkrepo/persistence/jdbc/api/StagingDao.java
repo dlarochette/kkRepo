@@ -1,6 +1,7 @@
 package com.github.klboke.kkrepo.persistence.jdbc.api;
 
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingGroupChangeRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingPromotionRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingRepositoryRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingSessionRecord;
@@ -41,6 +42,14 @@ public interface StagingDao {
   String PROMOTION_SUCCEEDED = "SUCCEEDED";
   String PROMOTION_FAILED = "FAILED";
   String PROMOTION_ROLLED_BACK = "ROLLED_BACK";
+
+  String GROUP_ADD = "ADD";
+  String GROUP_REMOVE = "REMOVE";
+  String GROUP_STAGED = "STAGED";
+  String GROUP_VALIDATED = "VALIDATED";
+  String GROUP_CONFLICT = "CONFLICT";
+  String GROUP_PROMOTED = "PROMOTED";
+  String GROUP_FAILED = "FAILED";
 
   long insertSession(StagingSessionRecord record);
 
@@ -104,6 +113,19 @@ public interface StagingDao {
   int deleteItem(long itemId);
 
   int deleteItems(long sessionId);
+
+  Optional<StagingGroupChangeRecord> findGroupChange(
+      long sessionId, long groupRepositoryId, long memberRepositoryId);
+
+  List<StagingGroupChangeRecord> listGroupChanges(long sessionId);
+
+  void upsertGroupChange(StagingGroupChangeRecord record);
+
+  int updateGroupChangeStatus(long changeId, String status);
+
+  int deleteGroupChange(long sessionId, long changeId);
+
+  int deleteGroupChanges(long sessionId);
 
   long insertPromotion(StagingPromotionRecord record);
 

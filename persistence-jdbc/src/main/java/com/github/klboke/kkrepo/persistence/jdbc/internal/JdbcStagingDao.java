@@ -6,6 +6,7 @@ import static com.github.klboke.kkrepo.persistence.jdbc.internal.support.JdbcRow
 
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.persistence.jdbc.api.StagingDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingGroupChangeRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingPromotionRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingRepositoryRecord;
@@ -32,6 +33,7 @@ public class JdbcStagingDao implements StagingDao {
   private final RowMapper<StagingRepositoryRecord> repositoryMapper;
   private final RowMapper<StagingItemRecord> itemMapper;
   private final RowMapper<StagingPromotionRecord> promotionMapper;
+  private final RowMapper<StagingGroupChangeRecord> groupChangeMapper;
 
   public JdbcStagingDao(JdbcTemplate jdbcTemplate, JsonColumns jsonColumns) {
     this.jdbcTemplate = jdbcTemplate;
@@ -75,6 +77,16 @@ public class JdbcStagingDao implements StagingDao {
         rs.getString("expected_sha256"),
         nullableLong(rs, "expected_size"),
         jsonColumns.read(rs.getString("attributes_json")),
+        nullableInstant(rs, "created_at"),
+        nullableInstant(rs, "updated_at"));
+    this.groupChangeMapper = (rs, rowNum) -> new StagingGroupChangeRecord(
+        rs.getLong("id"),
+        rs.getLong("session_id"),
+        rs.getLong("group_repository_id"),
+        rs.getLong("member_repository_id"),
+        rs.getString("action"),
+        rs.getObject("position") == null ? null : rs.getInt("position"),
+        rs.getString("status"),
         nullableInstant(rs, "created_at"),
         nullableInstant(rs, "updated_at"));
     this.promotionMapper = (rs, rowNum) -> new StagingPromotionRecord(
@@ -383,6 +395,76 @@ public class JdbcStagingDao implements StagingDao {
   public int deleteItems(long sessionId) {
     return jdbcTemplate.update(
         "DELETE FROM staging_item WHERE session_id = ?", sessionId);
+  }
+
+  @Override
+  public Optional<StagingGroupChangeRecord> findGroupChange(
+      long sessionId, long groupRepositoryId, long memberRepositoryId) {
+    return jdbcTemplate.query("""
+        SELECT * FROM staging_group_change
+        WHERE session_id = ? AND group_repository_id = ? AND member_repository_id = ?
+        """, groupChangeMapper, sessionId, groupRepositoryId, memberRepositoryId)
+        .stream().findFirst();
+  }
+
+  @Override
+  public List<StagingGroupChangeRecord> listGroupChanges(long sessionId) {
+    return jdbcTemplate.query("""
+        SELECT * FROM staging_group_change
+        WHERE session_id = ?
+        ORDER BY group_repository_id, member_repository_id
+        """, groupChangeMapper, sessionId);
+  }
+
+  @Override
+  public void upsertGroupChange(StagingGroupChangeRecord record) {
+    int updated = jdbcTemplate.update("""
+        UPDATE staging_group_change
+        SET action = ?, position = ?, status = ?, updated_at = CURRENT_TIMESTAMP(3)
+        WHERE session_id = ? AND group_repository_id = ? AND member_repository_id = ?
+        """,
+        record.action(),
+        record.position(),
+        record.status(),
+        record.sessionId(),
+        record.groupRepositoryId(),
+        record.memberRepositoryId());
+    if (updated == 0) {
+      jdbcTemplate.update("""
+          INSERT INTO staging_group_change
+            (session_id, group_repository_id, member_repository_id, action, position, status)
+          VALUES (?, ?, ?, ?, ?, ?)
+          """,
+          record.sessionId(),
+          record.groupRepositoryId(),
+          record.memberRepositoryId(),
+          record.action(),
+          record.position(),
+          record.status());
+    }
+  }
+
+  @Override
+  public int updateGroupChangeStatus(long changeId, String status) {
+    return jdbcTemplate.update("""
+        UPDATE staging_group_change
+        SET status = ?, updated_at = CURRENT_TIMESTAMP(3)
+        WHERE id = ?
+        """, status, changeId);
+  }
+
+  @Override
+  public int deleteGroupChange(long sessionId, long changeId) {
+    return jdbcTemplate.update("""
+        DELETE FROM staging_group_change
+        WHERE session_id = ? AND id = ?
+        """, sessionId, changeId);
+  }
+
+  @Override
+  public int deleteGroupChanges(long sessionId) {
+    return jdbcTemplate.update(
+        "DELETE FROM staging_group_change WHERE session_id = ?", sessionId);
   }
 
   @Override

@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -121,6 +122,35 @@ public class StagingController {
         id, repositoryId, subject(servlet), ClientAddress.from(servlet));
   }
 
+  @GetMapping("/sessions/{id}/groups")
+  public List<StagingService.GroupChangeView> groupChanges(
+      @PathVariable("id") long id, HttpServletRequest servlet) {
+    return staging.groupChanges(id, subject(servlet));
+  }
+
+  @PostMapping("/sessions/{id}/groups/{groupId}/members")
+  public StagingService.GroupChangeView addGroupChange(
+      @PathVariable("id") long id,
+      @PathVariable("groupId") long groupId,
+      @RequestBody GroupChangeRequest request,
+      HttpServletRequest servlet) {
+    if (request == null || request.memberRepositoryId() == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "memberRepositoryId is required");
+    }
+    return staging.addGroupChange(
+        id, groupId, request.memberRepositoryId(), request.action(), request.position(),
+        subject(servlet), ClientAddress.from(servlet));
+  }
+
+  @DeleteMapping("/sessions/{id}/groups/{changeId}")
+  public ResponseEntity<Void> removeGroupChange(
+      @PathVariable("id") long id,
+      @PathVariable("changeId") long changeId,
+      HttpServletRequest servlet) {
+    staging.removeGroupChange(id, changeId, subject(servlet), ClientAddress.from(servlet));
+    return ResponseEntity.noContent().build();
+  }
+
   @PostMapping("/sessions/{id}/preflight")
   public StagingService.StagingReport preflight(
       @PathVariable("id") long id, HttpServletRequest servlet) {
@@ -149,5 +179,9 @@ public class StagingController {
   }
 
   public record AddRepositoryRequest(String repository) {
+  }
+
+  public record GroupChangeRequest(
+      Long memberRepositoryId, String action, Integer position) {
   }
 }

@@ -14,6 +14,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetBlobRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.ComponentRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingGroupChangeRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingPromotionRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingRepositoryRecord;
@@ -26,6 +27,7 @@ import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
+import com.github.klboke.kkrepo.server.repositories.RepositoryService;
 import com.github.klboke.kkrepo.server.security.SecurityManagementService;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.InputStream;
@@ -37,6 +39,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -82,6 +85,7 @@ public class StagingService {
 
   private final StagingDao staging;
   private final RepositoryDao repositories;
+  private final RepositoryService repositoryService;
   private final AssetDao assets;
   private final BlobReferenceDao blobReferences;
   private final RepositoryRuntimeRegistry runtimes;
@@ -97,6 +101,7 @@ public class StagingService {
   public StagingService(
       StagingDao staging,
       RepositoryDao repositories,
+      RepositoryService repositoryService,
       AssetDao assets,
       BlobReferenceDao blobReferences,
       RepositoryRuntimeRegistry runtimes,
@@ -109,6 +114,7 @@ public class StagingService {
       @Value("${kkrepo.staging.max-items:1000}") int maxItems) {
     this.staging = staging;
     this.repositories = repositories;
+    this.repositoryService = repositoryService;
     this.assets = assets;
     this.blobReferences = blobReferences;
     this.runtimes = runtimes;
@@ -332,6 +338,7 @@ public class StagingService {
     for (StagingItemRecord item : staging.listItems(session.id())) {
       blobReferences.releaseOwner(BLOB_OWNER_TYPE, item.id());
     }
+    staging.deleteGroupChanges(session.id());
     staging.deleteItems(session.id());
     if (!staging.transitionSession(
         session.id(), session.revision(),
@@ -429,6 +436,101 @@ public class StagingService {
     return StagingReport.fromRecord(promotion);
   }
 
+  @Transactional
+  public GroupChangeView addGroupChange(
+      long sessionId,
+      long groupRepositoryId,
+      long memberRepositoryId,
+      String action,
+      Integer position,
+      PermissionSubject actor,
+      String remoteAddr) {
+    StagingSessionRecord session = lockOwnedSession(sessionId, actor);
+    requireState(session, WRITABLE, "Staging session is not OPEN");
+    requireNotExpired(session);
+    String normalized = action == null ? "" : action.trim().toUpperCase(Locale.ROOT);
+    if (!normalized.equals(StagingDao.GROUP_ADD) && !normalized.equals(StagingDao.GROUP_REMOVE)) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Group change action must be ADD or REMOVE");
+    }
+    RepositoryRecord group = repositories.findById(groupRepositoryId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Group repository not found"));
+    RepositoryRecord member = repositories.findById(memberRepositoryId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Member repository not found"));
+    validateGroupPair(group, member);
+    staging.addRepository(session.id(), group.id(), group.format().id());
+    staging.addRepository(session.id(), member.id(), member.format().id());
+    staging.upsertGroupChange(new StagingGroupChangeRecord(
+        null, session.id(), group.id(), member.id(), normalized,
+        position, StagingDao.GROUP_STAGED, Instant.now(), Instant.now()));
+    audit(actor, remoteAddr, "staging-group-change", session,
+        "staged", Map.of(
+            "group", group.name(),
+            "member", member.name(),
+            "action", normalized));
+    return GroupChangeView.from(staging.findGroupChange(
+        session.id(), group.id(), member.id()).orElseThrow(),
+        group.name(), member.name());
+  }
+
+  @Transactional
+  public void removeGroupChange(
+      long sessionId, long changeId, PermissionSubject actor, String remoteAddr) {
+    StagingSessionRecord session = lockOwnedSession(sessionId, actor);
+    requireState(session, WRITABLE, "Staging session is not OPEN");
+    if (staging.deleteGroupChange(session.id(), changeId) == 0) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Group change not found");
+    }
+    audit(actor, remoteAddr, "staging-group-change", session,
+        "removed", Map.of("changeId", changeId));
+  }
+
+  @Transactional(readOnly = true)
+  public List<GroupChangeView> groupChanges(long sessionId, PermissionSubject actor) {
+    StagingSessionRecord session = findSession(sessionId);
+    requireOwnerOrAdmin(session, actor);
+    return staging.listGroupChanges(session.id()).stream()
+        .map(change -> GroupChangeView.from(
+            change,
+            repositories.findById(change.groupRepositoryId())
+                .map(RepositoryRecord::name).orElse(null),
+            repositories.findById(change.memberRepositoryId())
+                .map(RepositoryRecord::name).orElse(null)))
+        .toList();
+  }
+
+  private void validateGroupPair(RepositoryRecord group, RepositoryRecord member) {
+    if (group.type() != RepositoryType.GROUP) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Target repository is not a group");
+    }
+    if (group.format() != member.format()) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Group member format does not match the group");
+    }
+    if (java.util.Objects.equals(group.id(), member.id())) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "A group cannot contain itself");
+    }
+    if (member.type() == RepositoryType.GROUP && containsRepository(member, group.id(), new HashSet<>())) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Group membership would create a cycle");
+    }
+  }
+
+  private boolean containsRepository(
+      RepositoryRecord group, long targetId, Set<Long> visited) {
+    if (!visited.add(group.id())) return false;
+    for (RepositoryRecord member : repositories.listMembers(group.id())) {
+      if (member.id() == targetId || containsRepository(member, targetId, visited)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Preflight and promotion
   // ---------------------------------------------------------------------------------------------
@@ -488,20 +590,27 @@ public class StagingService {
               + session.state());
     }
     List<StagingItemRecord> items = staging.listItems(session.id());
-    if (items.isEmpty()) {
+    List<StagingGroupChangeRecord> groups = staging.listGroupChanges(session.id());
+    if (items.isEmpty() && groups.isEmpty()) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Staging session has no items");
     }
     StagingPromotionRecord promotion = currentPromotion(session);
-    String manifest = manifestHash(items);
+    String manifest = manifestHash(items, groups);
     if (promotion.manifestSha256() != null
         && !promotion.manifestSha256().equals(manifest)) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Staging manifest changed after preflight; run preflight again");
     }
     List<ItemValidation> validations = validate(session, items);
-    List<ItemValidation> conflicts = validations.stream()
+    List<ItemValidation> conflicts = new ArrayList<>(validations.stream()
         .filter(validation -> validation.status().equals(StagingDao.ITEM_CONFLICT))
-        .toList();
+        .toList());
+    List<GroupValidation> groupValidations = validateGroupChanges(groups);
+    conflicts.addAll(groupValidations.stream()
+        .filter(validation -> validation.status().equals(StagingDao.GROUP_CONFLICT))
+        .map(validation -> new ItemValidation(null, StagingDao.ITEM_CONFLICT,
+            validation.message()))
+        .toList());
     if (!conflicts.isEmpty()) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Preflight conflicts: " + conflictSummary(conflicts));
@@ -517,7 +626,7 @@ public class StagingService {
         promotion.id(), StagingDao.PROMOTION_RUNNING, manifest, promotion.report(), now, null);
     audit(actor, remoteAddr, "staging-promote-start", session,
         "running", Map.of("promotionId", promotion.id(), "manifestSha256", manifest));
-    return new PromotionAttempt(session, items, promotion.id(), manifest, now);
+    return new PromotionAttempt(session, items, groups, promotion.id(), manifest, now);
   }
 
   private StagingReport applyPromotion(
@@ -529,18 +638,25 @@ public class StagingService {
           HttpStatus.CONFLICT, "Staging session is not currently promoting");
     }
     List<StagingItemRecord> items = staging.listItems(session.id());
-    if (!manifestHash(items).equals(attempt.manifestSha256())) {
+    List<StagingGroupChangeRecord> groups = staging.listGroupChanges(session.id());
+    if (!manifestHash(items, groups).equals(attempt.manifestSha256())) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Staging manifest changed during promotion");
     }
-    List<Long> repositoryIds = items.stream().map(StagingItemRecord::repositoryId).distinct().toList();
-    List<Long> locked = staging.lockRepositories(repositoryIds);
-    if (!new LinkedHashSet<>(locked).containsAll(repositoryIds)) {
+    List<Long> repositoryIds = new ArrayList<>();
+    items.forEach(item -> repositoryIds.add(item.repositoryId()));
+    groups.forEach(change -> {
+      repositoryIds.add(change.groupRepositoryId());
+      repositoryIds.add(change.memberRepositoryId());
+    });
+    List<Long> distinctRepositoryIds = repositoryIds.stream().distinct().toList();
+    List<Long> locked = staging.lockRepositories(distinctRepositoryIds);
+    if (!new LinkedHashSet<>(locked).containsAll(distinctRepositoryIds)) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "A staging target repository no longer exists");
     }
     Map<Long, RepositoryRuntime> runtimeById = new LinkedHashMap<>();
-    for (Long repositoryId : repositoryIds) {
+    for (Long repositoryId : distinctRepositoryIds) {
       RepositoryRecord record = repositories.findById(repositoryId)
           .orElseThrow(() -> new ResponseStatusException(
               HttpStatus.CONFLICT, "Repository " + repositoryId + " no longer exists"));
@@ -549,9 +665,15 @@ public class StagingService {
           HttpStatus.CONFLICT, "Repository " + record.name() + " is not available")));
     }
     List<ItemValidation> validations = validate(session, items);
-    List<ItemValidation> conflicts = validations.stream()
+    List<ItemValidation> conflicts = new ArrayList<>(validations.stream()
         .filter(validation -> validation.status().equals(StagingDao.ITEM_CONFLICT))
-        .toList();
+        .toList());
+    List<GroupValidation> groupValidations = validateGroupChanges(groups);
+    conflicts.addAll(groupValidations.stream()
+        .filter(validation -> validation.status().equals(StagingDao.GROUP_CONFLICT))
+        .map(validation -> new ItemValidation(null, StagingDao.ITEM_CONFLICT,
+            validation.message()))
+        .toList());
     if (!conflicts.isEmpty()) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Preflight conflicts: " + conflictSummary(conflicts));
@@ -572,6 +694,18 @@ public class StagingService {
       row.put("action", item.action());
       row.put("result", result);
       row.put("sha256", item.sha256());
+      results.add(row);
+    }
+    for (StagingGroupChangeRecord change : groups.stream()
+        .sorted(Comparator.comparingLong(StagingGroupChangeRecord::groupRepositoryId)
+            .thenComparingLong(StagingGroupChangeRecord::memberRepositoryId))
+        .toList()) {
+      String result = applyGroupChange(change, actor);
+      Map<String, Object> row = new LinkedHashMap<>();
+      row.put("groupRepositoryId", change.groupRepositoryId());
+      row.put("memberRepositoryId", change.memberRepositoryId());
+      row.put("action", change.action());
+      row.put("result", result);
       results.add(row);
     }
     Instant finishedAt = Instant.now();
@@ -992,7 +1126,8 @@ public class StagingService {
   private StagingReport runPreflight(
       StagingSessionRecord session, PermissionSubject actor, String remoteAddr) {
     List<StagingItemRecord> items = staging.listItems(session.id());
-    if (items.isEmpty()) {
+    List<StagingGroupChangeRecord> groups = staging.listGroupChanges(session.id());
+    if (items.isEmpty() && groups.isEmpty()) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Staging session has no items");
     }
     if (items.size() > maxItems) {
@@ -1018,7 +1153,22 @@ public class StagingService {
         conflicts.add(validation);
       }
     }
-    String manifest = manifestHash(items);
+    for (GroupValidation validation : validateGroupChanges(groups)) {
+      Map<String, Object> row = new LinkedHashMap<>();
+      row.put("groupRepositoryId", validation.change().groupRepositoryId());
+      row.put("memberRepositoryId", validation.change().memberRepositoryId());
+      row.put("action", validation.change().action());
+      row.put("status", validation.status());
+      if (validation.message() != null) {
+        row.put("message", validation.message());
+      }
+      results.add(row);
+      if (validation.status().equals(StagingDao.GROUP_CONFLICT)) {
+        conflicts.add(new ItemValidation(null, StagingDao.ITEM_CONFLICT,
+            validation.message()));
+      }
+    }
+    String manifest = manifestHash(items, groups);
     boolean promotable = conflicts.isEmpty();
     Map<String, Object> report = reportBody(
         session.id(), promotable, manifest, results,
@@ -1152,6 +1302,67 @@ public class StagingService {
       results.add(new ItemValidation(item, StagingDao.ITEM_VALIDATED, null));
     }
     return results;
+  }
+
+  private List<GroupValidation> validateGroupChanges(
+      List<StagingGroupChangeRecord> changes) {
+    List<GroupValidation> results = new ArrayList<>();
+    for (StagingGroupChangeRecord change : changes) {
+      RepositoryRecord group = repositories.findById(change.groupRepositoryId()).orElse(null);
+      RepositoryRecord member = repositories.findById(change.memberRepositoryId()).orElse(null);
+      if (group == null || member == null) {
+        results.add(new GroupValidation(change, StagingDao.GROUP_CONFLICT,
+            "Group or member repository no longer exists"));
+        staging.updateGroupChangeStatus(change.id(), StagingDao.GROUP_CONFLICT);
+        continue;
+      }
+      try {
+        validateGroupPair(group, member);
+      } catch (ResponseStatusException error) {
+        results.add(new GroupValidation(change, StagingDao.GROUP_CONFLICT,
+            error.getReason() == null ? "Invalid group membership" : error.getReason()));
+        staging.updateGroupChangeStatus(change.id(), StagingDao.GROUP_CONFLICT);
+        continue;
+      }
+      boolean present = repositories.listMembers(group.id()).stream()
+          .anyMatch(candidate -> candidate.id().equals(member.id()));
+      if (change.action().equals(StagingDao.GROUP_REMOVE) && !present) {
+        results.add(new GroupValidation(change, StagingDao.GROUP_CONFLICT,
+            "Member is not currently in the group"));
+        staging.updateGroupChangeStatus(change.id(), StagingDao.GROUP_CONFLICT);
+        continue;
+      }
+      results.add(new GroupValidation(change, StagingDao.GROUP_VALIDATED, null));
+      staging.updateGroupChangeStatus(change.id(), StagingDao.GROUP_VALIDATED);
+    }
+    return results;
+  }
+
+  private String applyGroupChange(StagingGroupChangeRecord change, PermissionSubject actor) {
+    RepositoryRecord group = repositories.findById(change.groupRepositoryId())
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.CONFLICT, "Group repository no longer exists"));
+    RepositoryRecord member = repositories.findById(change.memberRepositoryId())
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.CONFLICT, "Member repository no longer exists"));
+    List<RepositoryRecord> current = new ArrayList<>(repositories.listMembers(group.id()));
+    boolean changed;
+    if (change.action().equals(StagingDao.GROUP_ADD)) {
+      changed = current.stream().noneMatch(candidate -> candidate.id().equals(member.id()));
+      if (changed) {
+        int position = change.position() == null
+            ? current.size() : Math.max(0, Math.min(change.position(), current.size()));
+        current.add(position, member);
+      }
+    } else {
+      changed = current.removeIf(candidate -> candidate.id().equals(member.id()));
+    }
+    if (changed) {
+      repositoryService.replaceMembers(
+          group.name(), current.stream().map(RepositoryRecord::name).toList());
+    }
+    staging.updateGroupChangeStatus(change.id(), StagingDao.GROUP_PROMOTED);
+    return changed ? change.action().toLowerCase(Locale.ROOT) : "unchanged";
   }
 
   private void requireBlobMatchesItem(AssetBlobRecord blob, StagingItemRecord item) {
@@ -1301,10 +1512,13 @@ public class StagingService {
   }
 
   private void requireStagingRepository(RepositoryRecord repository) {
+    if (repository.type() == RepositoryType.GROUP) {
+      return;
+    }
     if (repository.type() != RepositoryType.HOSTED) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST,
-          "Multi-repository staging requires hosted repositories: " + repository.name());
+          "Multi-repository staging requires hosted or group repositories: " + repository.name());
     }
     if (repository.format() != RepositoryFormat.RAW
         && !contentAdapters.containsKey(repository.format())) {
@@ -1407,16 +1621,32 @@ public class StagingService {
   }
 
   private static String manifestHash(List<StagingItemRecord> items) {
+    return manifestHash(items, List.of());
+  }
+
+  private static String manifestHash(
+      List<StagingItemRecord> items, List<StagingGroupChangeRecord> groupChanges) {
     StringBuilder manifest = new StringBuilder();
     for (StagingItemRecord item : items.stream()
         .sorted(Comparator.comparingLong(StagingItemRecord::repositoryId)
             .thenComparing(StagingItemRecord::logicalPath))
         .toList()) {
-      manifest.append(item.repositoryId()).append('\u0000')
+      manifest.append("item").append('\u0000')
+          .append(item.repositoryId()).append('\u0000')
           .append(item.logicalPath()).append('\u0000')
           .append(item.action()).append('\u0000')
           .append(item.sha256() == null ? "" : item.sha256()).append('\u0000')
           .append(item.size() == null ? "" : item.size()).append('\n');
+    }
+    for (StagingGroupChangeRecord change : groupChanges.stream()
+        .sorted(Comparator.comparingLong(StagingGroupChangeRecord::groupRepositoryId)
+            .thenComparingLong(StagingGroupChangeRecord::memberRepositoryId))
+        .toList()) {
+      manifest.append("group").append('\u0000')
+          .append(change.groupRepositoryId()).append('\u0000')
+          .append(change.memberRepositoryId()).append('\u0000')
+          .append(change.action()).append('\u0000')
+          .append(change.position() == null ? "" : change.position()).append('\n');
     }
     return sha256Hex(manifest.toString());
   }
@@ -1451,8 +1681,10 @@ public class StagingService {
   private static String conflictSummary(List<ItemValidation> conflicts) {
     return conflicts.stream()
         .limit(5)
-        .map(conflict -> conflict.item().repositoryId() + ":" + conflict.item().logicalPath()
-            + " (" + conflict.message() + ")")
+        .map(conflict -> conflict.item() == null
+            ? "group (" + conflict.message() + ")"
+            : conflict.item().repositoryId() + ":" + conflict.item().logicalPath()
+                + " (" + conflict.message() + ")")
         .reduce((left, right) -> left + "; " + right)
         .orElse("no conflicts");
   }
@@ -1578,9 +1810,34 @@ public class StagingService {
   private record ItemValidation(StagingItemRecord item, String status, String message) {
   }
 
+  public record GroupChangeView(
+      long id,
+      long groupRepositoryId,
+      String groupRepository,
+      long memberRepositoryId,
+      String memberRepository,
+      String action,
+      Integer position,
+      String status,
+      Instant createdAt,
+      Instant updatedAt) {
+    static GroupChangeView from(
+        StagingGroupChangeRecord record, String group, String member) {
+      return new GroupChangeView(
+          record.id(), record.groupRepositoryId(), group, record.memberRepositoryId(), member,
+          record.action(), record.position(), record.status(), record.createdAt(),
+          record.updatedAt());
+    }
+  }
+
+  private record GroupValidation(
+      StagingGroupChangeRecord change, String status, String message) {
+  }
+
   private record PromotionAttempt(
       StagingSessionRecord session,
       List<StagingItemRecord> items,
+      List<StagingGroupChangeRecord> groups,
       long promotionId,
       String manifestSha256,
       Instant startedAt) {

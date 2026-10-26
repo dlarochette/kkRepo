@@ -31,6 +31,7 @@ import com.github.klboke.kkrepo.server.maven.BlobStorageRegistry;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
+import com.github.klboke.kkrepo.server.repositories.RepositoryService;
 import com.github.klboke.kkrepo.server.security.SecurityManagementService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -187,6 +188,7 @@ class StagingServiceTest {
     final BlobStorageRegistry blobStorageRegistry = mock(BlobStorageRegistry.class);
     final SecurityAuditDao audit = mock(SecurityAuditDao.class);
     final SecurityManagementService security = mock(SecurityManagementService.class);
+    final RepositoryService repositoryService = mock(RepositoryService.class);
     final AtomicReference<StagingSessionRecord> session =
         new AtomicReference<>(session(StagingDao.SESSION_OPEN, 0));
     final RepositoryRecord repository = new RepositoryRecord(
@@ -226,7 +228,7 @@ class StagingServiceTest {
       when(security.decide(any(), any(String.class)))
           .thenReturn(com.github.klboke.kkrepo.auth.AccessDecision.deny("not admin"));
       service = new StagingService(
-          staging, repositories, assets, blobReferences, runtimes, rawHosted,
+          staging, repositories, repositoryService, assets, blobReferences, runtimes, rawHosted,
           blobStorageRegistry, audit, security, List.of(), transactionManager(), 100);
     }
 

@@ -44,6 +44,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryDataMigrati
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityPrivilegeRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityRoleRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityUserRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingGroupChangeRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingPromotionRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingSessionRecord;
@@ -6386,6 +6387,24 @@ public abstract class PersistenceApiContract {
 
     assertEquals(1, dao.deleteItems(sessionId));
     assertTrue(dao.listItems(sessionId).isEmpty());
+
+    long groupId = createRepository(
+        "staging-group-" + suffix, RepositoryFormat.RAW, RepositoryType.GROUP);
+    long memberId = createRepository(
+        "staging-member-" + suffix, RepositoryFormat.RAW, RepositoryType.HOSTED);
+    dao.upsertGroupChange(new StagingGroupChangeRecord(
+        null, sessionId, groupId, memberId, StagingDao.GROUP_ADD, 0,
+        StagingDao.GROUP_STAGED, now, now));
+    assertEquals(1, dao.listGroupChanges(sessionId).size());
+    StagingGroupChangeRecord groupChange =
+        dao.findGroupChange(sessionId, groupId, memberId).orElseThrow();
+    assertEquals(StagingDao.GROUP_ADD, groupChange.action());
+    assertEquals(1, dao.updateGroupChangeStatus(groupChange.id(), StagingDao.GROUP_VALIDATED));
+    assertEquals(StagingDao.GROUP_VALIDATED,
+        dao.findGroupChange(sessionId, groupId, memberId).orElseThrow().status());
+    assertEquals(1, dao.deleteGroupChange(sessionId, groupChange.id()));
+    assertTrue(dao.listGroupChanges(sessionId).isEmpty());
+
     assertTrue(dao.removeRepository(sessionId, repositoryId));
     assertFalse(dao.hasRepository(sessionId, repositoryId));
   }
