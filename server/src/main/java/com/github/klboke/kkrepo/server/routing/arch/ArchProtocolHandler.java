@@ -13,11 +13,14 @@ import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
+import com.github.klboke.kkrepo.server.staging.StagingHttpSupport;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -39,9 +42,15 @@ public class ArchProtocolHandler implements RepositoryProtocolHandler {
 
   private final ArchPathParser parser = new ArchPathParser();
   private final ArchService service;
+  private StagingHttpSupport stagingHttp;
 
   public ArchProtocolHandler(ArchService service) {
     this.service = service;
+  }
+
+  @Autowired(required = false)
+  public void setStagingHttpSupport(StagingHttpSupport stagingHttp) {
+    this.stagingHttp = stagingHttp;
   }
 
   @Override
@@ -52,6 +61,13 @@ public class ArchProtocolHandler implements RepositoryProtocolHandler {
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest context) throws IOException {
     HttpServletRequest request = context.servletRequest();
+    if (stagingHttp != null) {
+      Optional<ResponseEntity<?>> staged = stagingHttp.dispatch(
+          context.runtime(), context.path(), request);
+      if (staged.isPresent()) {
+        return staged.get();
+      }
+    }
     try {
       ArchPath path = parser.parse(context.path());
       if (context.method() == HttpMethod.PUT) {
