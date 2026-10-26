@@ -745,6 +745,54 @@ public class StagingService {
     return Optional.of(stagedResponse(runtime, item, blob, path, headOnly));
   }
 
+  /** Returns the staged item/blob identity without materializing a protocol response. */
+  @Transactional(readOnly = true)
+  public Optional<StagedContent> findStagedContent(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String rawPath,
+      PermissionSubject actor) {
+    StagingSessionRecord session = findSessionByKey(sessionKey, false);
+    requireSessionReadable(session, runtime, actor);
+    StagingContentAdapter adapter = adapterFor(runtime.format());
+    if (adapter == null) {
+      return Optional.empty();
+    }
+    Optional<String> normalized = adapter.normalizePath(rawPath);
+    if (normalized.isEmpty()) {
+      return Optional.empty();
+    }
+    Optional<StagingItemRecord> staged = staging.findItem(
+        session.id(), runtime.id(), PersistenceHashes.pathHash(normalized.get()));
+    if (staged.isEmpty()) {
+      return Optional.empty();
+    }
+    StagingItemRecord item = staged.get();
+    AssetBlobRecord blob = item.assetBlobId() == null
+        ? null
+        : assets.findBlobById(item.assetBlobId()).orElse(null);
+    return Optional.of(new StagedContent(item, blob));
+  }
+
+  /** Reads a small staged payload, used by protocol boundaries that need raw bytes. */
+  public byte[] readStagedBody(AssetBlobRecord blob) {
+    if (blob == null) {
+      throw new MavenExceptions.MavenNotFoundException("Staged blob is missing");
+    }
+    BlobReference reference = BlobReferenceCodec.reference(
+        blob.blobRef(), blob.objectKey(), blob.sha256(), blob.size());
+    try (InputStream body = blobStorageRegistry.forBlobStoreId(blob.blobStoreId())
+        .get(reference)
+        .orElseThrow(() -> new MavenExceptions.MavenNotFoundException(blob.objectKey()))) {
+      return body.readAllBytes();
+    } catch (java.io.IOException error) {
+      throw new java.io.UncheckedIOException(error);
+    }
+  }
+
+  public record StagedContent(StagingItemRecord item, AssetBlobRecord blob) {
+  }
+
   @Transactional
   public StagingWriteResult putRaw(
       RepositoryRuntime runtime,

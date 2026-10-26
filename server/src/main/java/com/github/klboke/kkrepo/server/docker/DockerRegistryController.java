@@ -97,7 +97,11 @@ public class DockerRegistryController {
     }
     RepositoryRuntime runtime = runtime(target);
     return switch (target.path().kind()) {
-      case MANIFEST -> stream(dispatchManifest(runtime, target.path(), false, accept), request, false);
+      case MANIFEST -> {
+        ResponseEntity<?> staged = stagedManifest(request, runtime, target.path(), false);
+        yield staged != null
+            ? staged : stream(dispatchManifest(runtime, target.path(), false, accept), request, false);
+      }
       case BLOB -> stream(dispatchBlob(runtime, target.path(), false), request, true);
       case UPLOAD_SESSION -> uploadStatus(request, runtime, target, target.path());
       case TAGS -> tagsJson(request, dispatchTags(runtime, target.path(), last, limit), limit);
@@ -122,7 +126,11 @@ public class DockerRegistryController {
     }
     RepositoryRuntime runtime = runtime(target);
     return switch (target.path().kind()) {
-      case MANIFEST -> stream(dispatchManifest(runtime, target.path(), true, accept), request, false);
+      case MANIFEST -> {
+        ResponseEntity<?> staged = stagedManifest(request, runtime, target.path(), true);
+        yield staged != null
+            ? staged : stream(dispatchManifest(runtime, target.path(), true, accept), request, false);
+      }
       case BLOB -> stream(dispatchBlob(runtime, target.path(), true), request, false);
       case UPLOAD_SESSION -> uploadStatus(request, runtime, target, target.path());
       default -> throw new DockerProtocolException(
@@ -421,6 +429,33 @@ public class DockerRegistryController {
       throw new DockerProtocolException(DockerErrorCode.NAME_UNKNOWN, target.repository());
     }
     return runtime;
+  }
+
+  private ResponseEntity<?> stagedManifest(
+      HttpServletRequest request, RepositoryRuntime runtime, DockerPath path, boolean headOnly) {
+    if (staging == null || !staged(request)) {
+      return null;
+    }
+    java.util.Optional<StagingService.StagedContent> content = staging.findStagedContent(
+        runtime, stagingSession(request), manifestPath(path), subject(request));
+    if (content.isEmpty()) {
+      return null;
+    }
+    StagingService.StagedContent staged = content.get();
+    if (staged.item().action().equals(com.github.klboke.kkrepo.persistence.jdbc.api.StagingDao.ITEM_DELETE)) {
+      return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+    }
+    byte[] body = staging.readStagedBody(staged.blob());
+    HttpHeaders headers = new HttpHeaders();
+    String contentType = staged.item().contentType() == null
+        ? "application/vnd.oci.image.manifest.v1+json" : staged.item().contentType();
+    headers.setContentType(MediaType.parseMediaType(contentType));
+    headers.set("Docker-Content-Digest", "sha256:" + staged.blob().sha256());
+    headers.setETag("\"sha256:" + staged.blob().sha256() + "\"");
+    headers.setContentLength(body.length);
+    return headOnly
+        ? ResponseEntity.status(HttpStatus.OK).headers(headers).build()
+        : ResponseEntity.status(HttpStatus.OK).headers(headers).body(body);
   }
 
   private static boolean staged(HttpServletRequest request) {
