@@ -42,10 +42,17 @@ public class ArchProtocolHandler implements RepositoryProtocolHandler {
 
   private final ArchPathParser parser = new ArchPathParser();
   private final ArchService service;
+  private com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget;
   private StagingHttpSupport stagingHttp;
 
   public ArchProtocolHandler(ArchService service) {
     this.service = service;
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setGroupWriteTargetService(
+      com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget) {
+    this.groupWriteTarget = groupWriteTarget;
   }
 
   @Autowired(required = false)
@@ -61,9 +68,14 @@ public class ArchProtocolHandler implements RepositoryProtocolHandler {
   @Override
   public ResponseEntity<?> handle(RepositoryProtocolRequest context) throws IOException {
     HttpServletRequest request = context.servletRequest();
+    com.github.klboke.kkrepo.server.maven.RepositoryRuntime runtime = context.runtime();
+    if (context.method() != HttpMethod.GET && context.method() != HttpMethod.HEAD
+        && runtime.isGroup() && groupWriteTarget != null) {
+      runtime = groupWriteTarget.requireWriteTarget(runtime);
+    }
     if (stagingHttp != null) {
       Optional<ResponseEntity<?>> staged = stagingHttp.dispatch(
-          context.runtime(), context.path(), request);
+          runtime, context.path(), request);
       if (staged.isPresent()) {
         return staged.get();
       }
@@ -71,7 +83,7 @@ public class ArchProtocolHandler implements RepositoryProtocolHandler {
     try {
       ArchPath path = parser.parse(context.path());
       if (context.method() == HttpMethod.PUT) {
-        if (context.runtime().type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
+        if (runtime.type() != com.github.klboke.kkrepo.core.RepositoryType.HOSTED) {
           throw new MavenExceptions.MethodNotAllowed(
               "Pacman package publication is only available on hosted repositories");
         }
@@ -85,23 +97,23 @@ public class ArchProtocolHandler implements RepositoryProtocolHandler {
         }
         try (InputStream body = request.getInputStream()) {
           ArchService.Published published = path.kind() == ArchPath.Kind.PACKAGE
-              ? service.publish(context.runtime(), path.fileName(), body, actor(request),
+              ? service.publish(runtime, path.fileName(), body, actor(request),
                   ClientAddress.from(request))
-              : service.publishSignature(context.runtime(), path.fileName(), body, actor(request),
+              : service.publishSignature(runtime, path.fileName(), body, actor(request),
                   ClientAddress.from(request));
           return ResponseEntity.status(HttpStatus.CREATED)
               .header(HttpHeaders.LOCATION, published.path()).build();
         }
       }
       if (context.method() == HttpMethod.DELETE) {
-        return response(service.delete(context.runtime(), path, true), request);
+        return response(service.delete(runtime, path, true), request);
       }
       if (context.method() == HttpMethod.POST) {
         throw new MavenExceptions.MethodNotAllowed(
             "POST is not supported for pacman repositories; use PUT or the components API");
       }
       boolean headOnly = context.method() == HttpMethod.HEAD;
-      return response(service.get(context.runtime(), path, headOnly), request);
+      return response(service.get(runtime, path, headOnly), request);
     } catch (MavenExceptions.MavenNotFoundException notFound) {
       throw notFound;
     } catch (MavenExceptions.MethodNotAllowed notAllowed) {
