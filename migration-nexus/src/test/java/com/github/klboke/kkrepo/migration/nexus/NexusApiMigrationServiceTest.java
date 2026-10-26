@@ -68,6 +68,23 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 class NexusApiMigrationServiceTest {
 
   @Test
+  void validationReportsMissingOrAlteredRulesAndLostRepositoryBindings() {
+    var rules = new FakeRoutingRules();
+    var repositories = new FakeRepositoryDao();
+    var migration = new NexusRoutingRuleMigration(rules, repositories.asDao());
+    var definition = new NexusRoutingRuleMigration.Definition("private", "", "BLOCK", List.of("/private/.*"));
+    var plan = new NexusRoutingRuleMigration.Plan(List.of(definition),
+        List.of(new NexusRoutingRuleMigration.Binding("proxy", "private")), List.of(), "checksum");
+    assertEquals(List.of("Rule content mismatch: private", "Repository binding mismatch: proxy"), migration.validate(plan));
+    rules.insert("private", "", "ALLOW", List.of("/private/.*"));
+    assertTrue(migration.validate(plan).contains("Rule content mismatch: private"));
+    rules.update(1, "private", "", "BLOCK", List.of("/private/.*"));
+    assertEquals(List.of("Repository binding mismatch: proxy"), migration.validate(plan));
+    assertTrue(repositories.records.isEmpty());
+    assertEquals(1, rules.records.size());
+  }
+
+  @Test
   void migratesRoutingRulesAndBothBindingSpellingsIdempotently() {
     FakeBlobStoreDao stores = new FakeBlobStoreDao();
     FakeRepositoryDao repos = new FakeRepositoryDao();

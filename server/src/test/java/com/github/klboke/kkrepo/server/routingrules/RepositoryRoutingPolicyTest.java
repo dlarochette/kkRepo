@@ -94,6 +94,30 @@ class RepositoryRoutingPolicyTest {
     assertSame(proxy, policy.prepare(proxy, "/public/a+b", request()));
   }
 
+  @Test void alternatePathsCannotRestoreBlockedProxyMembersOrHitTheirCachedAssets() {
+    RepositoryRuntime proxy = runtime(1, RepositoryType.PROXY);
+    RepositoryRuntime hosted = runtime(2, RepositoryType.HOSTED);
+    RepositoryRuntime group = runtime(3, RepositoryType.GROUP).withMembers(List.of(proxy, hosted));
+    when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/private/.*")));
+    for (String path : List.of("//private/file", "/public/../private/file", "/public/%2e%2e/private/file", "/./private/file")) {
+      assertThrows(RepositoryRoutingPolicy.Blocked.class, () -> policy.prepare(proxy, path, request()), path);
+      assertEquals(List.of(hosted), policy.prepare(group, path, request()).members(), path);
+    }
+    var invalid = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+        () -> policy.prepare(proxy, "/../private/file", request()));
+    assertEquals(400, invalid.getStatusCode().value());
+  }
+
+  @Test void malformedEncodingAndCorruptPersistedModesNeverAllowDownloads() {
+    RepositoryRuntime proxy = runtime(1, RepositoryType.PROXY);
+    when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/private/.*")));
+    var failure = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+        () -> policy.prepare(proxy, "/%GG", request()));
+    assertEquals(400, failure.getStatusCode().value());
+    when(rules.bindings()).thenReturn(List.of(binding("unknown", "/private/.*")));
+    assertThrows(IllegalStateException.class, () -> policy.prepare(proxy, "/public/file", request()));
+  }
+
   private Binding binding(String mode, String... matchers) {
     return new Binding(1, new Rule(10, "rule", "", mode, List.of(matchers)));
   }

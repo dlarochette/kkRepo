@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -53,7 +54,7 @@ public class RepositoryRoutingPolicy {
       catch (IllegalArgumentException invalid) {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
       }
-      StringBuilder matchPath = new StringBuilder(decoded.startsWith("/") ? decoded : "/" + decoded);
+      StringBuilder matchPath = new StringBuilder(canonicalPath(decoded));
       StringBuilder query = new StringBuilder();
       // Nexus RoutingRuleHandler includes decoded query parameters in matcher input.
       request.getParameterMap().forEach((name, values) -> {
@@ -66,6 +67,20 @@ public class RepositoryRoutingPolicy {
       request.setAttribute(CONTEXT, new Context(matchPath.toString(), bindings));
     }
     return project(runtime, (Context) request.getAttribute(CONTEXT));
+  }
+
+  /** Match the resource identity after the slash and dot normalization used by routing/upstreams. */
+  private static String canonicalPath(String decoded) {
+    var segments = new ArrayDeque<String>();
+    for (String segment : decoded.split("/", -1)) {
+      if (segment.isEmpty() || segment.equals(".")) continue;
+      if (segment.equals("..")) {
+        if (segments.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Path escapes repository");
+        segments.removeLast();
+      } else segments.addLast(segment);
+    }
+    String path = "/" + String.join("/", segments);
+    return decoded.endsWith("/") && !segments.isEmpty() ? path + "/" : path;
   }
 
   /** Reapply the active request policy when a protocol reloads a durable group snapshot. */

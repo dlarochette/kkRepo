@@ -325,14 +325,20 @@ public class RService {
     // Package bytes are pinned by the group binding created with the published index. Do not
     // contact an upstream proxy again here: the next PACKAGES.gz request refreshes the projection,
     // while this immutable download continues to resolve against one coherent snapshot.
-    RRegistryDao.Snapshot snapshot =
-        RepositoryRoutingPolicy.filtersGroup(runtime.id())
-            ? ensureGroupSnapshot(runtime, SOURCE_NAMESPACE)
-            : publishedSnapshots.find(runtime.id(), SOURCE_NAMESPACE)
-                .orElseGet(() -> ensureGroupSnapshot(runtime, SOURCE_NAMESPACE));
+    RRegistryDao.Snapshot snapshot = publishedSnapshots.find(runtime.id(), SOURCE_NAMESPACE)
+        .orElseGet(() -> ensureGroupSnapshot(runtime, SOURCE_NAMESPACE));
     RRegistryDao.GroupBinding binding = registry.findGroupBinding(
-        runtime.id(), SOURCE_NAMESPACE, snapshot.revision(), path.normalized()).orElseThrow(
-            () -> new MavenExceptions.MavenNotFoundException(path.normalized()));
+        runtime.id(), SOURCE_NAMESPACE, snapshot.revision(), path.normalized()).orElse(null);
+    if (RepositoryRoutingPolicy.filtersGroup(runtime.id())
+        && (binding == null || !runtime.containsMember(binding.memberRepositoryId()))) {
+      snapshot = ensureGroupSnapshot(runtime, SOURCE_NAMESPACE);
+      binding = registry.findGroupBinding(
+          runtime.id(), SOURCE_NAMESPACE, snapshot.revision(), path.normalized()).orElse(null);
+    }
+    if (binding == null || (RepositoryRoutingPolicy.filtersGroup(runtime.id())
+        && !runtime.containsMember(binding.memberRepositoryId()))) {
+      throw new MavenExceptions.MavenNotFoundException(path.normalized());
+    }
     RepositoryRuntime source = runtimes.resolveById(binding.memberRepositoryId()).orElseThrow(
         () -> new MavenExceptions.MavenNotFoundException(path.normalized()));
     MavenResponse response = source.isHosted()

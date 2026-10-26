@@ -15,6 +15,8 @@ A rule has `name`, non-null `description`, `mode` (`ALLOW` or `BLOCK`), and a no
 
 The Nexus reference must permit its controlled loopback upstream (`http://localhost:8081`). The CI setup adds `localhost` to the Nexus SSRF domain allowlist; on a shared reference instance use an already permitted fixture endpoint or configure this prerequisite explicitly.
 
+Matcher input canonicalizes repeated slashes and dot segments before evaluating policy, preventing alternate URLs from reaching denied proxy content. The black-box checks cover direct GET/HEAD denial for both forms and group fallback for repeated slashes. Hosted dot-segment resolution remains a separate compatibility difference: Nexus can resolve a group fallback through such a URL while kkRepo can return 404; the denied proxy must never be restored.
+
 ## Configuration migration
 
 `NexusRestClient` reads `GET /service/rest/v1/routing-rules` together with repository details. The target `/internal/migration/nexus/preflight` exposes `routingRules.rules`, `bindings`, `errors` and `checksum`; `/run` imports rules before binding repositories inside the existing configuration transaction. An inaccessible policy API is a blocking error, never an empty rule set.

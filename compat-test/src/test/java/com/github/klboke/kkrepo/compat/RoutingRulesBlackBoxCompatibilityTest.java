@@ -65,6 +65,14 @@ class RoutingRulesBlackBoxCompatibilityTest {
       check(e, "GET", "/repository/" + proxy + "/blocked/component/1.0/component-1.0.jar", null, 403);
       check(e, "HEAD", "/repository/" + proxy + "/blocked/component/1.0/component-1.0.jar", null, 403);
       check(e, "GET", "/repository/" + proxy + "/%62locked/component/1.0/component-1.0.jar", null, 403);
+      for (String alternate : List.of("//blocked/component/1.0/component-1.0.jar",
+          "/allowed/../blocked/component/1.0/component-1.0.jar")) {
+        check(e, "GET", "/repository/" + proxy + alternate, null, 403);
+        check(e, "HEAD", "/repository/" + proxy + alternate, null, 403);
+        if (alternate.startsWith("//")) {
+          assertEquals("fallback", check(e, "GET", "/repository/" + group + alternate, null, 200).body());
+        }
+      }
       assertEquals("fallback", check(e, "GET", "/repository/" + group + "/blocked/component/1.0/component-1.0.jar", null, 200).body());
       assertEquals("allowed", check(e, "GET", "/repository/" + proxy + "/allowed/component/1.0/component-1.0.jar", null, 200).body());
       check(e, "PUT", rules + "/" + rule, rule(rule, "ALLOW", List.of("/allowed/.*\\.jar")), 204);
