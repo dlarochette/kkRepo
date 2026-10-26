@@ -436,22 +436,22 @@ Current format coverage:
 | npm | yes | packument | `NpmStagingContentAdapter` |
 | PyPI | yes | simple index | `PypiStagingContentAdapter` |
 | Helm | yes | `index.yaml` | `HelmStagingContentAdapter` |
-| NuGet | yes | n/a | `NugetStagingContentAdapter` |
-| RubyGems | yes | n/a | `RubygemsStagingContentAdapter` |
-| Cargo | yes | n/a | `CargoStagingContentAdapter` |
-| Swift | yes | n/a | `SwiftStagingContentAdapter` |
-| Pub | yes | n/a | `PubStagingContentAdapter` |
-| Composer | yes | n/a | `ComposerStagingContentAdapter` |
-| Conan | yes | n/a | `ConanStagingContentAdapter` |
-| Terraform | yes | n/a | `TerraformStagingContentAdapter` |
-| Go | yes | n/a | `GoStagingContentAdapter` |
-| Conda | yes | n/a | `CondaStagingContentAdapter` |
-| Ansible | yes | n/a | `AnsibleStagingContentAdapter` |
-| Git LFS | yes | n/a | `GitLfsStagingContentAdapter` |
-| Yum | yes | index regeneration pending | `YumStagingContentAdapter` |
-| APT | yes | index regeneration pending | `AptStagingContentAdapter` |
-| Alpine | yes | index regeneration pending | `AlpineStagingContentAdapter` |
-| R | yes | index regeneration pending | `RStagingContentAdapter` |
+| NuGet | yes | registration/index regeneration pending | `NugetStagingContentAdapter` |
+| RubyGems | yes | `specs.4.8.gz` regeneration pending | `RubygemsStagingContentAdapter` |
+| Cargo | yes | sparse index regeneration pending | `CargoStagingContentAdapter` |
+| Swift | yes | registry index regeneration pending | `SwiftStagingContentAdapter` |
+| Pub | yes | package listing regeneration pending | `PubStagingContentAdapter` |
+| Composer | yes | `packages.json` regeneration pending | `ComposerStagingContentAdapter` |
+| Conan | yes | n/a (clients query revisions directly) | `ConanStagingContentAdapter` |
+| Terraform | yes | provider index regeneration pending | `TerraformStagingContentAdapter` |
+| Go | yes | `@v/list` regeneration pending | `GoStagingContentAdapter` |
+| Conda | yes | `repodata.json` regeneration pending | `CondaStagingContentAdapter` |
+| Ansible | yes | collection index regeneration pending | `AnsibleStagingContentAdapter` |
+| Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
+| Yum | yes | `repomd.xml`/primary regeneration pending | `YumStagingContentAdapter` |
+| APT | yes | `Packages`/`Release` regeneration pending | `AptStagingContentAdapter` |
+| Alpine | yes | `APKINDEX` regeneration pending | `AlpineStagingContentAdapter` |
+| R | yes | `PACKAGES` regeneration pending | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
 | Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
 | Open VSX | yes | extension JSON view | `feat/staging-openvsx` |
@@ -461,9 +461,11 @@ Current limitations:
 
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
-- Yum, APT, Alpine and R stage package content correctly but their generated repository indexes are
-  still rebuilt from live content only; promotion therefore republishes packages without refreshing
-  the index until that follow-up lands.
+- Except for Maven, npm, PyPI, Helm and Docker tags, generated indexes are rebuilt from live
+  content only. Staged packages are visible individually and are published correctly at promotion,
+  but a client that resolves them through an index (Yum/APT/Alpine/R/Conda, NuGet, RubyGems, Cargo,
+  Composer, Terraform, Go, Pub, Ansible, Swift) will not see them until that format's
+  staging-aware index generation lands.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
   session row stays visible for reporting until an operator deletes it.
 - Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
