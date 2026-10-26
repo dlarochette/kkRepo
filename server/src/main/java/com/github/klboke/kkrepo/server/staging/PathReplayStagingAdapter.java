@@ -59,4 +59,14 @@ public abstract class PathReplayStagingAdapter implements StagingContentAdapter 
       StagingBlobSource source,
       String actor,
       String ip);
+
+  protected static String replay(
+      StagingBlobSource source, java.util.function.Consumer<InputStream> writer) {
+    try (InputStream body = source.open()) {
+      writer.accept(body);
+      return "published";
+    } catch (java.io.IOException error) {
+      throw new java.io.UncheckedIOException(error);
+    }
+  }
 }
