@@ -338,6 +338,17 @@ curl -u ci:token -T dist/app.jar \
 curl -u ci:token \
   -H 'X-KkRepo-Staging: release-2026-10' \
   https://repo.example/repository/raw-release/dist/app.jar
+
+# Arch package on a format branch with an Arch staging adapter
+curl -u ci:token -T dist/demo-1.0.0-1-x86_64.pkg.tar.zst \
+  -H 'X-KkRepo-Staging: release-2026-10' \
+  https://repo.example/repository/arch-release/demo-1.0.0-1-x86_64.pkg.tar.zst
+
+# Open VSX publication on a format branch with an Open VSX staging adapter
+curl -u ci:token -X POST \
+  -H 'X-KkRepo-Staging: release-2026-10' \
+  --data-binary @dist/demo-1.0.0.vsix \
+  https://repo.example/repository/openvsx-release/api/-/publish
 ```
 
 Without the header the same URLs serve and write live content, so no client URL changes.
@@ -361,13 +372,15 @@ to upload staged content without being able to publish it.
 | Lifecycle | `server/staging/StagingService.java` |
 | Internal API | `server/staging/StagingController.java` |
 | Permission mapping | `SecurityManagementFilter` (`/internal/staging/**`) |
-| Raw content | `X-KkRepo-Staging` dispatch in `BuiltinRepositoryProtocolHandler`; staged blob writes through `RawHostedService.storeStagedBlob` |
+| Raw content | `X-KkRepo-Staging` dispatch through `StagingHttpSupport`; staged blob writes through `RawHostedService.storeStagedBlob` |
+| Format adapters | `StagingContentAdapter` SPI; Raw is built in, Arch and Open VSX adapters live on their format branches |
 | Tests | `StagingServiceTest`, persistence contract `stagingSessionsItemsAndPromotionsRoundTripWithRevisionFence` on MySQL and PostgreSQL |
 
 Current limitations:
 
-- Only `RAW` hosted repositories are accepted as staging targets. Other formats are rejected with a
-  clear error until their protocol write paths implement staged publication.
+- A repository is accepted only when its format has a `StagingContentAdapter`. Raw is built in;
+  Arch and Open VSX adapters are delivered on their dedicated branches. Other formats return a
+  clear error until their adapter exists.
 - Group membership changes are represented by the schema direction but not yet exposed by the API.
 - There is no background expiry worker yet; expired sessions reject writes and promotion but keep
   their staged blobs until an operator cancels the session.
