@@ -1,12 +1,14 @@
 package com.github.klboke.kkrepo.server.staging;
 
 import com.github.klboke.kkrepo.server.blob.TempBlobFiles;
+import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.http.ConditionalResponses;
 import com.github.klboke.kkrepo.server.maven.MavenExceptions;
 import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
+import com.github.klboke.kkrepo.server.security.ForwardedHeaderPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,9 +29,17 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 @Component
 public class StagingHttpSupport {
   private final StagingService staging;
+  private final ForwardedHeaderPolicy forwardedHeaderPolicy;
 
   public StagingHttpSupport(StagingService staging) {
+    this(staging, null);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public StagingHttpSupport(
+      StagingService staging, ForwardedHeaderPolicy forwardedHeaderPolicy) {
     this.staging = staging;
+    this.forwardedHeaderPolicy = forwardedHeaderPolicy;
   }
 
   public Optional<ResponseEntity<?>> dispatch(
@@ -62,7 +72,8 @@ public class StagingHttpSupport {
       HttpServletRequest request) {
     boolean headOnly = "HEAD".equalsIgnoreCase(request.getMethod());
     Optional<MavenResponse> staged = staging.getStagedContent(
-        runtime, sessionKey, path, headOnly, subject(request));
+        runtime, sessionKey, path, headOnly, subject(request),
+        repositoryBaseUrl(runtime, request));
     if (staged.isEmpty()) {
       return Optional.empty();
     }
@@ -89,6 +100,15 @@ public class StagingHttpSupport {
         .header(StagingService.HEADER, String.valueOf(result.sessionId()))
         .header("X-KkRepo-Staging-Action", result.action())
         .build();
+  }
+
+  private String repositoryBaseUrl(
+      RepositoryRuntime runtime, HttpServletRequest request) {
+    String prefix = forwardedHeaderPolicy != null
+        ? forwardedHeaderPolicy.serverBaseUrl(request)
+        : request.getScheme() + "://" + request.getServerName()
+            + (request.getServerPort() > 0 ? ":" + request.getServerPort() : "");
+    return prefix + request.getContextPath() + RepositoryUrlPrefix.path(request) + runtime.name();
   }
 
   private static ResponseEntity<?> headResponse(
