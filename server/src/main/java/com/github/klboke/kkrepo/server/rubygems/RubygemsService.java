@@ -123,6 +123,14 @@ public class RubygemsService {
     return push(runtime, body, contentType, createdBy, createdByIp);
   }
 
+  UploadPlan planPush(Path gem) throws IOException {
+    GemMetadata metadata = readGemMetadata(gem);
+    return new UploadPlan(gemPath(metadata), metadata.name(), metadata.version());
+  }
+
+  record UploadPlan(String gemPath, String name, String version) {
+  }
+
   public MavenResponse push(
       RepositoryRuntime runtime,
       InputStream body,
