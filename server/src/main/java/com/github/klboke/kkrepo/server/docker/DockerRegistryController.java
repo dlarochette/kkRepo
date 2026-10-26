@@ -16,6 +16,7 @@ import com.github.klboke.kkrepo.protocol.docker.DockerProtocolException;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
+import com.github.klboke.kkrepo.server.staging.StagingService;
 import com.github.klboke.kkrepo.server.security.ForwardedHeaderPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
@@ -23,6 +24,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -50,6 +52,12 @@ public class DockerRegistryController {
   private final AccessDecisionService accessDecisionService;
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
   private final DockerPathParser parser = new DockerPathParser();
+  private StagingService staging;
+
+  @Autowired(required = false)
+  public void setStagingService(StagingService staging) {
+    this.staging = staging;
+  }
 
   public DockerRegistryController(
       RepositoryRuntimeRegistry registry,
@@ -175,6 +183,13 @@ public class DockerRegistryController {
     DockerTarget target = target(request);
     RepositoryRuntime runtime = runtime(target);
     DockerPath path = target.path();
+    if (path.kind() == DockerPath.Kind.MANIFEST && staging != null
+        && staged(request)) {
+      staging.putRequest(
+          runtime, stagingSession(request), manifestPath(path), request,
+          subject(request), ClientAddress.from(request));
+      return ResponseEntity.status(HttpStatus.CREATED).build();
+    }
     if (path.kind() == DockerPath.Kind.MANIFEST) {
       DockerResponse response = hosted.putManifest(
           runtime, path.imageName(), path.reference(), request.getInputStream(), contentType, tags,
@@ -206,6 +221,14 @@ public class DockerRegistryController {
     DockerTarget target = target(request);
     RepositoryRuntime runtime = runtime(target);
     DockerPath path = target.path();
+    if (path.kind() == DockerPath.Kind.MANIFEST && staging != null
+        && staged(request)) {
+      int deleted = staging.deleteRaw(
+          runtime, stagingSession(request), manifestPath(path), subject(request),
+          ClientAddress.from(request));
+      return ResponseEntity.status(
+          deleted == 0 ? HttpStatus.NOT_FOUND : HttpStatus.ACCEPTED).build();
+    }
     if (path.kind() == DockerPath.Kind.MANIFEST) {
       return stream(hosted.deleteManifest(runtime, path.imageName(), path.reference()), request, false);
     }
@@ -398,6 +421,26 @@ public class DockerRegistryController {
       throw new DockerProtocolException(DockerErrorCode.NAME_UNKNOWN, target.repository());
     }
     return runtime;
+  }
+
+  private static boolean staged(HttpServletRequest request) {
+    String value = request.getHeader(StagingService.HEADER);
+    return value != null && !value.isBlank();
+  }
+
+  private static String stagingSession(HttpServletRequest request) {
+    return request.getHeader(StagingService.HEADER).trim();
+  }
+
+  private static String manifestPath(DockerPath path) {
+    return "manifest/" + path.imageName() + "/" + path.reference();
+  }
+
+  private static com.github.klboke.kkrepo.auth.PermissionSubject subject(
+      HttpServletRequest request) {
+    Object value = request.getAttribute(AuthenticatedSubject.REQUEST_ATTRIBUTE);
+    return value instanceof AuthenticatedSubject authenticated
+        ? authenticated.permissionSubject() : null;
   }
 
   private static String userId(HttpServletRequest request) {
