@@ -191,7 +191,8 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       filterChain.doFilter(request, response);
       return;
     }
-    if (isInvalidPubPublishRoute(repository.get(), target)) {
+    if (isInvalidPubPublishRoute(repository.get(), target)
+        || isInvalidOpenVsxPublishRoute(repository.get(), target)) {
       filterChain.doFilter(request, response);
       return;
     }
@@ -211,6 +212,7 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
             : switch (repository.get().format()) {
       case CARGO -> authenticationService.authenticateCargo(request);
       case PUB -> authenticationService.authenticatePub(request);
+      case OPENVSX -> authenticationService.authenticateOpenVsx(request);
       case RUBYGEMS -> authenticationService.authenticateRubygems(request);
       case ANSIBLEGALAXY -> authenticationService.authenticateAnsibleGalaxy(request);
       default -> authenticationService.authenticate(request);
@@ -309,7 +311,8 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
         || repository.format() == RepositoryFormat.ANSIBLEGALAXY
         || repository.format() == RepositoryFormat.APT
         || repository.format() == RepositoryFormat.ALPINE
-        || repository.format() == RepositoryFormat.R)
+        || repository.format() == RepositoryFormat.R
+        || repository.format() == RepositoryFormat.OPENVSX)
         && target.componentUploadRoute()) {
       return List.of(PermissionAction.ADD);
     }
@@ -340,6 +343,14 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
           && "PUT".equalsIgnoreCase(target.method())) {
         boolean exists = assetDao.findAssetByPath(repository.id(), target.path()).isPresent();
         return exists ? List.of(PermissionAction.EDIT) : List.of(PermissionAction.ADD);
+      }
+      if (repository.format() == RepositoryFormat.OPENVSX
+          && isOpenVsxPublishRoute(target.method(), target.path())) {
+        return List.of(PermissionAction.ADD);
+      }
+      if (repository.format() == RepositoryFormat.OPENVSX
+          && isOpenVsxReadOnlyPostRoute(target.method(), target.path())) {
+        return List.of(PermissionAction.READ);
       }
       return target.actions(repository.format());
     }
@@ -480,6 +491,13 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     if (format == RepositoryFormat.R && "PUT".equalsIgnoreCase(method)) {
       return List.of(PermissionAction.ADD, PermissionAction.EDIT);
     }
+    if (format == RepositoryFormat.OPENVSX
+        && isOpenVsxPublishRoute(method, path)) {
+      return List.of(PermissionAction.ADD);
+    }
+    if (format == RepositoryFormat.OPENVSX && isOpenVsxReadOnlyPostRoute(method, path)) {
+      return List.of(PermissionAction.READ);
+    }
     if (format == RepositoryFormat.HUGGINGFACE && "POST".equalsIgnoreCase(method)
         && path != null && path.startsWith("api/models/") && path.contains("/paths-info/")) {
       return List.of(PermissionAction.READ);
@@ -519,6 +537,22 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     return "GET".equalsIgnoreCase(method)
         && ANSIBLE_GALAXY_PATH_PARSER.parse(path).kind()
             == AnsibleGalaxyPath.Kind.IMPORT_TASK;
+  }
+
+  private static boolean isOpenVsxPublishRoute(String method, String path) {
+    return "POST".equalsIgnoreCase(method) && "api/-/publish".equals(path);
+  }
+
+  private static boolean isOpenVsxReadOnlyPostRoute(String method, String path) {
+    return "POST".equalsIgnoreCase(method)
+        && ("vscode/gallery/extensionquery".equals(path) || "vscode/item".equals(path));
+  }
+
+  private static boolean isInvalidOpenVsxPublishRoute(
+      RepositoryRecord repository, RepositoryRequest target) {
+    return repository.format() == RepositoryFormat.OPENVSX
+        && repository.type() != RepositoryType.HOSTED
+        && isOpenVsxPublishRoute(target.method(), target.path());
   }
 
   private static boolean isInvalidPubPublishRoute(RepositoryRecord repository, RepositoryRequest target) {
@@ -583,6 +617,10 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       response.setHeader(
           HttpHeaders.WWW_AUTHENTICATE,
           "Bearer realm=\"pub\", message=\"Authentication required\"");
+    } else if (repository.format() == RepositoryFormat.OPENVSX) {
+      response.setHeader(
+          HttpHeaders.WWW_AUTHENTICATE,
+          "Bearer realm=\"openvsx\", message=\"Authentication required\"");
     } else if (repository.format() == RepositoryFormat.ANSIBLEGALAXY) {
       response.setHeader(
           HttpHeaders.WWW_AUTHENTICATE,
