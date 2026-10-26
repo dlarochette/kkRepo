@@ -1228,6 +1228,7 @@ public class StagingService {
    * Retains an already uploaded blob for a staging session. Promotion only releases this staging
    * ownership; the owning format is responsible for making the blob reachable.
    */
+
   @Transactional
   public StagingWriteResult stageExternalBlob(
       RepositoryRuntime runtime,
