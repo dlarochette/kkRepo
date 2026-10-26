@@ -519,6 +519,7 @@ const FORMAT_ICON_NAMES = Object.freeze({
   r: "r",
   huggingface: "huggingface",
   gitlfs: "gitlfs",
+  openvsx: "openvsx",
   raw: "raw",
 });
 
@@ -545,6 +546,7 @@ const FORMAT_DISPLAY_NAMES = Object.freeze({
   r: "R / CRAN",
   huggingface: "Hugging Face Models",
   gitlfs: "Git LFS",
+  openvsx: "VS Code / Open VSX",
   raw: "Raw",
 });
 
@@ -2504,7 +2506,7 @@ function memberCandidates() {
   if (!format) return [];
   const allowNestedGroups = format === "pub" || format === "composer"
     || format === "terraform" || format === "swift" || format === "ansiblegalaxy"
-    || format === "conda";
+    || format === "conda" || format === "openvsx";
   return repositories.filter((repo) => {
     if (repo.format !== format) return false;
     if (repositoryFormMode === "edit" && repo.name === editingRepositoryName) return false;
@@ -2774,7 +2776,8 @@ function refreshRepositoryRemoteDefaults(recipe) {
     apt: "https://deb.debian.org/debian/",
     alpine: "https://dl-cdn.alpinelinux.org/alpine/",
     r: "https://cloud.r-project.org/",
-    huggingface: "https://huggingface.co/"
+    huggingface: "https://huggingface.co/",
+    openvsx: "https://open-vsx.org/"
   };
   if (recipe.format === "swift") {
     remote.value = defaults.swift;
