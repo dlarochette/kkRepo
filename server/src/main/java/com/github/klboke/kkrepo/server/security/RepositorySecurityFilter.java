@@ -309,7 +309,8 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
         || repository.format() == RepositoryFormat.ANSIBLEGALAXY
         || repository.format() == RepositoryFormat.APT
         || repository.format() == RepositoryFormat.ALPINE
-        || repository.format() == RepositoryFormat.R)
+        || repository.format() == RepositoryFormat.R
+        || repository.format() == RepositoryFormat.ARCH)
         && target.componentUploadRoute()) {
       return List.of(PermissionAction.ADD);
     }
@@ -328,17 +329,26 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       }
       if (repository.format() == RepositoryFormat.APT
           && "PUT".equalsIgnoreCase(target.method())) {
-        boolean exists = assetDao.findAssetByPath(repository.id(), target.path()).isPresent();
+        boolean exists = assetDao.findAssetByPath(repository.id(),
+            assetLookupPath(repository, target.path())).isPresent();
         return exists ? List.of(PermissionAction.EDIT) : List.of(PermissionAction.ADD);
       }
       if (repository.format() == RepositoryFormat.ALPINE
           && "PUT".equalsIgnoreCase(target.method())) {
-        boolean exists = assetDao.findAssetByPath(repository.id(), target.path()).isPresent();
+        boolean exists = assetDao.findAssetByPath(repository.id(),
+            assetLookupPath(repository, target.path())).isPresent();
         return exists ? List.of(PermissionAction.EDIT) : List.of(PermissionAction.ADD);
       }
       if (repository.format() == RepositoryFormat.R
           && "PUT".equalsIgnoreCase(target.method())) {
-        boolean exists = assetDao.findAssetByPath(repository.id(), target.path()).isPresent();
+        boolean exists = assetDao.findAssetByPath(repository.id(),
+            assetLookupPath(repository, target.path())).isPresent();
+        return exists ? List.of(PermissionAction.EDIT) : List.of(PermissionAction.ADD);
+      }
+      if (repository.format() == RepositoryFormat.ARCH
+          && "PUT".equalsIgnoreCase(target.method())) {
+        boolean exists = assetDao.findAssetByPath(repository.id(),
+            assetLookupPath(repository, target.path())).isPresent();
         return exists ? List.of(PermissionAction.EDIT) : List.of(PermissionAction.ADD);
       }
       return target.actions(repository.format());
@@ -480,6 +490,9 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     if (format == RepositoryFormat.R && "PUT".equalsIgnoreCase(method)) {
       return List.of(PermissionAction.ADD, PermissionAction.EDIT);
     }
+    if (format == RepositoryFormat.ARCH && "PUT".equalsIgnoreCase(method)) {
+      return List.of(PermissionAction.ADD, PermissionAction.EDIT);
+    }
     if (format == RepositoryFormat.HUGGINGFACE && "POST".equalsIgnoreCase(method)
         && path != null && path.startsWith("api/models/") && path.contains("/paths-info/")) {
       return List.of(PermissionAction.READ);
@@ -519,6 +532,26 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     return "GET".equalsIgnoreCase(method)
         && ANSIBLE_GALAXY_PATH_PARSER.parse(path).kind()
             == AnsibleGalaxyPath.Kind.IMPORT_TASK;
+  }
+
+  /**
+   * Asset rows are keyed by the decoded protocol path, while the servlet request URI is still
+   * percent-encoded. Using the raw path for the ADD/EDIT decision lets an encoded variant miss
+   * the existing asset and overwrite it with ADD-only permission.
+   */
+  private static String assetLookupPath(RepositoryRecord repository, String path) {
+    if (path == null) return null;
+    boolean decodedByProtocol = switch (repository.format()) {
+      case ARCH, APT, ALPINE, R -> true;
+      default -> false;
+    };
+    if (!decodedByProtocol) return path;
+    try {
+      return UriPathDecoder.decodePath(path);
+    } catch (IllegalArgumentException invalid) {
+      // The protocol handler rejects the malformed path before any write happens.
+      return path;
+    }
   }
 
   private static boolean isInvalidPubPublishRoute(RepositoryRecord repository, RepositoryRequest target) {
