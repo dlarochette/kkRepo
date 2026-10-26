@@ -351,7 +351,7 @@ public class PubHostedService {
         () -> AssetMetadataCache.Loaded.from(assetDao.findAssetByPath(runtime.id(), path), assetDao));
   }
 
-  private MavenResponse publishSuccess(boolean headOnly) {
+  MavenResponse publishSuccess(boolean headOnly) {
     return PubResponses.json(objectMapper,
         Map.of("success", Map.of("message", "Successfully uploaded package.")),
         200,

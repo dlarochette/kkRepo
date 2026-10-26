@@ -1224,6 +1224,34 @@ public class StagingService {
     return new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
   }
 
+  /**
+   * Retains an already uploaded blob for a staging session. Promotion only releases this staging
+   * ownership; the owning format is responsible for making the blob reachable.
+   */
+  @Transactional
+  public StagingWriteResult stageExternalBlob(
+      RepositoryRuntime runtime,
+      String sessionKey,
+      String logicalPath,
+      long blobId,
+      String contentType,
+      Map<String, Object> attributes,
+      PermissionSubject actor,
+      String remoteAddr) {
+    StagingSessionRecord session = lockSessionByKey(sessionKey);
+    requireSessionWritable(session, runtime, actor);
+    if (adapterFor(runtime.format()) == null) {
+      throw new MavenExceptions.MethodNotAllowed(
+          "No staging adapter is installed for " + runtime.format().id());
+    }
+    AssetBlobRecord blob = assets.findBlobById(blobId)
+        .orElseThrow(() -> new MavenExceptions.MavenNotFoundException(
+            "Staged blob not found: " + blobId));
+    StagingContentAdapter.StagedUpload upload = new StagingContentAdapter.StagedUpload(
+        blob, logicalPath, contentType, attributes == null ? Map.of() : attributes);
+    return persistStagedUpload(session, runtime, upload, actor, remoteAddr);
+  }
+
   private StagingWriteResult persistStagedUpload(
       StagingSessionRecord session,
       RepositoryRuntime runtime,
