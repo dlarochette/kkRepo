@@ -389,7 +389,33 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
       throws IOException, ServletException {
     String stagingSession = request.servletRequest().getHeader(StagingService.HEADER);
     if (staging != null && stagingSession != null && !stagingSession.isBlank()) {
-      return handleStaged(request, stagingSession.trim());
+      String sessionKey = stagingSession.trim();
+      switch (request.method().name()) {
+        case "GET", "HEAD" -> {
+          boolean headOnly = request.method().name().equals("HEAD");
+          Optional<MavenResponse> staged = staging.getStagedContent(
+              request.runtime(), sessionKey, request.path(), headOnly,
+              requestPermissionSubject(request.servletRequest()));
+          if (staged.isPresent()) {
+            return headOnly
+                ? toHeadResponse(staged.get(), request.servletRequest())
+                : toStreamingResponse(staged.get(), request.servletRequest());
+          }
+        }
+        case "PUT", "DELETE" -> {
+          return handleStaged(request, sessionKey);
+        }
+        case "POST" -> {
+          if (staging.supportsPublication(request.runtime().format(), request.path())) {
+            return handleStaged(request, sessionKey);
+          }
+          throw new MavenExceptions.MethodNotAllowed(
+              "Staging does not support POST for " + request.runtime().format().id()
+                  + " repositories at " + request.path());
+        }
+        default -> throw new MavenExceptions.MethodNotAllowed(
+            "Staging does not support " + request.method() + " on repository content");
+      }
     }
     return switch (request.method().name()) {
       case "GET" -> get(request.runtime(), request.repositoryName(), request.servletRequest());
@@ -410,13 +436,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
     RepositoryRuntime runtime = request.runtime();
     String path = request.path();
     return switch (request.method().name()) {
-      case "GET" -> toStreamingResponse(staging.getRaw(
-          runtime, sessionKey, path, false,
-          requestPermissionSubject(request.servletRequest())), request.servletRequest());
-      case "HEAD" -> toHeadResponse(staging.getRaw(
-          runtime, sessionKey, path, true,
-          requestPermissionSubject(request.servletRequest())), request.servletRequest());
-      case "PUT" -> {
+      case "PUT", "POST" -> {
         try (InputStream body = request.servletRequest().getInputStream()) {
           StagingService.StagingWriteResult result = staging.putRaw(
               runtime, sessionKey, path, body, request.contentType(),

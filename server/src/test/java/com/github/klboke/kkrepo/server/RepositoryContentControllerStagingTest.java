@@ -44,11 +44,12 @@ class RepositoryContentControllerStagingTest {
     RawHostedService rawHosted = mock(RawHostedService.class);
     StagingService staging = mock(StagingService.class);
     byte[] staged = "staged".getBytes(StandardCharsets.UTF_8);
-    when(staging.getRaw(runtime, "release-1", PATH, false, ALICE))
-        .thenReturn(MavenResponse.ok(new ByteArrayInputStream(staged), staged.length,
-            "text/plain", "etag", Instant.EPOCH));
-    when(staging.getRaw(runtime, "release-1", PATH, true, ALICE))
-        .thenReturn(MavenResponse.noBody(200, staged.length, "text/plain", "etag", Instant.EPOCH));
+    when(staging.getStagedContent(runtime, "release-1", PATH, false, ALICE))
+        .thenReturn(Optional.of(MavenResponse.ok(new ByteArrayInputStream(staged), staged.length,
+            "text/plain", "etag", Instant.EPOCH)));
+    when(staging.getStagedContent(runtime, "release-1", PATH, true, ALICE))
+        .thenReturn(Optional.of(MavenResponse.noBody(
+            200, staged.length, "text/plain", "etag", Instant.EPOCH)));
     RepositoryProtocolController controller = controller(runtime, rawHosted, staging);
 
     MockHttpServletRequest get = request("GET");

@@ -88,6 +88,7 @@ public class StagingService {
   private final SecurityAuditDao audit;
   private final SecurityManagementService security;
   private final TransactionTemplate transaction;
+  private final Map<RepositoryFormat, StagingContentAdapter> contentAdapters;
   private final int maxItems;
 
   public StagingService(
@@ -100,6 +101,7 @@ public class StagingService {
       BlobStorageRegistry blobStorageRegistry,
       SecurityAuditDao audit,
       SecurityManagementService security,
+      List<StagingContentAdapter> contentAdapters,
       org.springframework.transaction.PlatformTransactionManager transactionManager,
       @Value("${kkrepo.staging.max-items:1000}") int maxItems) {
     this.staging = staging;
@@ -112,6 +114,11 @@ public class StagingService {
     this.audit = audit;
     this.security = security;
     this.transaction = new TransactionTemplate(transactionManager);
+    this.contentAdapters = (contentAdapters == null ? List.<StagingContentAdapter>of() : contentAdapters)
+        .stream()
+        .filter(java.util.Objects::nonNull)
+        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+            adapter -> formatOf(adapter), adapter -> adapter, (left, right) -> left));
     this.maxItems = Math.max(1, maxItems);
   }
 
@@ -469,15 +476,32 @@ public class StagingService {
   private String applyItem(
       RepositoryRuntime runtime, StagingItemRecord item, PermissionSubject actor) {
     String createdBy = actorUserId(actor);
+    StagingContentAdapter adapter = adapterFor(item.format());
     if (item.action().equals(StagingDao.ITEM_DELETE)) {
-      MavenResponse response = rawHosted.deleteInternal(runtime, item.logicalPath());
-      return response.status() == 404 ? "already-absent" : "deleted";
+      boolean deleted = adapter != null
+          ? adapter.delete(runtime, item.logicalPath())
+          : rawHosted.deleteInternal(runtime, item.logicalPath()).status() != 404;
+      return deleted ? "deleted" : "already-absent";
     }
     AssetBlobRecord blob = assets.lockLiveBlobById(item.assetBlobId())
         .orElseThrow(() -> new ResponseStatusException(
             HttpStatus.CONFLICT, "Staged blob is no longer available for " + item.logicalPath()));
     requireBlobMatchesItem(blob, item);
-    ComponentRecord component = rawComponent(runtime, item.logicalPath());
+    if (StagingComponents.unindexed(item.attributes())) {
+      rawHosted.linkInternalBlobUnindexed(
+          runtime, item.logicalPath(), blob, item.contentType(), createdBy, "staging");
+      return item.action().equals(StagingDao.ITEM_ADD) ? "added" : "replaced";
+    }
+    Optional<ComponentRecord> encoded = StagingComponents.decode(
+        item.repositoryId(), item.format(), item.attributes(), Instant.now());
+    ComponentRecord component = encoded.orElseGet(() -> {
+      if (adapter != null) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT,
+            "Staged item has no component projection for " + item.logicalPath());
+      }
+      return rawComponent(runtime, item.logicalPath());
+    });
     if (item.action().equals(StagingDao.ITEM_ADD)) {
       boolean inserted = rawHosted.linkInternalBlobWithComponentAtBrowsePathIfAbsent(
           runtime, item.logicalPath(), blob, item.contentType(), createdBy, "staging",
@@ -542,11 +566,17 @@ public class StagingService {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Raw staged content
+  // Staged content
   // ---------------------------------------------------------------------------------------------
 
+  /** True when the format adapter accepts a publication body at this path (for example POST). */
+  public boolean supportsPublication(RepositoryFormat format, String rawPath) {
+    StagingContentAdapter adapter = adapterFor(format);
+    return adapter != null && adapter.supportsPublication(rawPath);
+  }
+
   @Transactional(readOnly = true)
-  public MavenResponse getRaw(
+  public Optional<MavenResponse> getStagedContent(
       RepositoryRuntime runtime,
       String sessionKey,
       String rawPath,
@@ -554,30 +584,39 @@ public class StagingService {
       PermissionSubject actor) {
     StagingSessionRecord session = findSessionByKey(sessionKey, false);
     requireSessionReadable(session, runtime, actor);
-    if (runtime.format() != RepositoryFormat.RAW) {
+    StagingContentAdapter adapter = adapterFor(runtime.format());
+    String path;
+    if (adapter != null) {
+      Optional<String> normalized = adapter.normalizePath(rawPath);
+      if (normalized.isEmpty()) {
+        return Optional.empty();
+      }
+      path = normalized.get();
+    } else if (runtime.format() == RepositoryFormat.RAW) {
+      if (rawPath == null || rawPath.isBlank() || rawPath.endsWith("/")) {
+        return Optional.empty();
+      }
+      path = RawHostedService.normalizeAssetPath(rawPath);
+    } else {
       throw new MavenExceptions.MethodNotAllowed(
-          "Staging reads are currently supported only for Raw repositories");
+          "Staging reads are not supported for " + runtime.format().id() + " repositories");
     }
-    if (rawPath == null || rawPath.isBlank() || rawPath.endsWith("/")) {
-      return rawHosted.get(runtime, rawPath, headOnly);
-    }
-    String path = RawHostedService.normalizeAssetPath(rawPath);
     Optional<StagingItemRecord> staged = staging.findItem(
         session.id(), runtime.id(), PersistenceHashes.pathHash(path));
-    if (staged.isPresent()) {
-      StagingItemRecord item = staged.get();
-      if (item.action().equals(StagingDao.ITEM_DELETE)) {
-        throw new MavenExceptions.MavenNotFoundException(path);
-      }
-      AssetBlobRecord blob = item.assetBlobId() == null
-          ? null
-          : assets.findBlobById(item.assetBlobId()).orElse(null);
-      if (blob == null) {
-        throw new MavenExceptions.MavenNotFoundException(path);
-      }
-      return stagedResponse(runtime, item, blob, path, headOnly);
+    if (staged.isEmpty()) {
+      return Optional.empty();
     }
-    return rawHosted.get(runtime, path, headOnly);
+    StagingItemRecord item = staged.get();
+    if (item.action().equals(StagingDao.ITEM_DELETE)) {
+      return Optional.of(MavenResponse.noBody(404));
+    }
+    AssetBlobRecord blob = item.assetBlobId() == null
+        ? null
+        : assets.findBlobById(item.assetBlobId()).orElse(null);
+    if (blob == null) {
+      return Optional.of(MavenResponse.noBody(404));
+    }
+    return Optional.of(stagedResponse(runtime, item, blob, path, headOnly));
   }
 
   @Transactional
@@ -591,17 +630,41 @@ public class StagingService {
       String remoteAddr) {
     StagingSessionRecord session = lockSessionByKey(sessionKey);
     requireSessionWritable(session, runtime, actor);
-    String path = RawHostedService.normalizeAssetPath(rawPath);
+    StagingContentAdapter adapter = adapterFor(runtime.format());
+    if (adapter == null && runtime.format() != RepositoryFormat.RAW) {
+      throw new MavenExceptions.MethodNotAllowed(
+          "Staging writes are not supported for " + runtime.format().id() + " repositories");
+    }
+    StagingContentAdapter.StagedUpload upload;
+    String path;
+    if (adapter != null) {
+      upload = adapter.stage(
+          runtime, rawPath, body, contentType, actorUserId(actor), remoteAddr);
+      path = upload.logicalPath();
+    } else {
+      path = RawHostedService.normalizeAssetPath(rawPath);
+      AssetBlobRecord blob = rawHosted.storeStagedBlob(
+          runtime, path, body, contentType, Map.of(), actorUserId(actor), remoteAddr);
+      Map<String, Object> attributes = new LinkedHashMap<>();
+      attributes.put(StagingComponents.ATTRIBUTE,
+          StagingComponents.encode(rawComponent(runtime, path)));
+      upload = new StagingContentAdapter.StagedUpload(blob, path, contentType, attributes);
+    }
     WritePolicy policy = WritePolicy.parse(runtime.writePolicy());
     Optional<AssetRecord> live = assets.findAssetByPath(runtime.id(), path);
     if (policy == WritePolicy.DENY) {
       throw new MavenExceptions.WritePolicyDenied("Write policy DENY forbids writing " + path);
     }
     if (policy == WritePolicy.ALLOW_ONCE && live.isPresent()) {
-      throw new MavenExceptions.WritePolicyDenied("Write policy ALLOW_ONCE forbids overwriting " + path);
+      throw new MavenExceptions.WritePolicyDenied(
+          "Write policy ALLOW_ONCE forbids overwriting " + path);
     }
-    AssetBlobRecord blob = rawHosted.storeStagedBlob(
-        runtime, path, body, contentType, Map.of(), actorUserId(actor), remoteAddr);
+    AssetBlobRecord blob = upload.blob();
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    if (upload.attributes() != null) {
+      attributes.putAll(upload.attributes());
+    }
+    attributes.put("stagedBy", actorUserId(actor));
     Optional<StagingItemRecord> existing = staging.findItem(
         session.id(), runtime.id(), PersistenceHashes.pathHash(path));
     String action = live.isPresent()
@@ -627,7 +690,7 @@ public class StagingService {
         path,
         null,
         null,
-        Map.of("stagedBy", actorUserId(actor)),
+        attributes,
         now,
         now);
     long itemId;
@@ -670,7 +733,17 @@ public class StagingService {
       String remoteAddr) {
     StagingSessionRecord session = lockSessionByKey(sessionKey);
     requireSessionWritable(session, runtime, actor);
-    String path = RawHostedService.normalizeAssetPath(rawPath);
+    StagingContentAdapter adapter = adapterFor(runtime.format());
+    String path;
+    if (adapter != null) {
+      path = adapter.normalizePath(rawPath).orElseThrow(() -> new MavenExceptions.BadRequestException(
+          "Staging delete requires a concrete content path"));
+    } else if (runtime.format() == RepositoryFormat.RAW) {
+      path = RawHostedService.normalizeAssetPath(rawPath);
+    } else {
+      throw new MavenExceptions.MethodNotAllowed(
+          "Staging deletes are not supported for " + runtime.format().id() + " repositories");
+    }
     Optional<StagingItemRecord> existing = staging.findItem(
         session.id(), runtime.id(), PersistenceHashes.pathHash(path));
     Optional<AssetRecord> live = assets.findAssetByPath(runtime.id(), path);
@@ -712,7 +785,8 @@ public class StagingService {
       itemId = staging.tryInsertItem(candidate)
           .orElseGet(() -> staging.findItem(
                   session.id(), runtime.id(), PersistenceHashes.pathHash(path))
-              .orElseThrow(() -> new IllegalStateException("Staged delete insert lost without a winner"))
+              .orElseThrow(() -> new IllegalStateException(
+                  "Staged delete insert lost without a winner"))
               .id());
     } else {
       itemId = existing.get().id();
@@ -861,6 +935,14 @@ public class StagingService {
             "Repository blob store changed after the content was staged"));
         continue;
       }
+      StagingContentAdapter adapter = adapterFor(item.format());
+      if (adapter != null) {
+        String error = adapter.validateItem(repository, item, live.orElse(null));
+        if (error != null) {
+          results.add(new ItemValidation(item, StagingDao.ITEM_CONFLICT, error));
+          continue;
+        }
+      }
       if (item.action().equals(StagingDao.ITEM_ADD) && live.isPresent()) {
         Optional<AssetBlobRecord> liveBlob = live.get().assetBlobId() == null
             ? Optional.empty()
@@ -928,9 +1010,9 @@ public class StagingService {
     if (!staging.hasRepository(session.id(), runtime.id())) {
       throw new MavenExceptions.MavenNotFoundException("Repository is not part of this staging session");
     }
-    if (runtime.format() != RepositoryFormat.RAW) {
+    if (runtime.format() != RepositoryFormat.RAW && adapterFor(runtime.format()) == null) {
       throw new MavenExceptions.MethodNotAllowed(
-          "Staging reads are currently supported only for Raw repositories");
+          "Staging reads are not supported for " + runtime.format().id() + " repositories");
     }
   }
 
@@ -943,9 +1025,9 @@ public class StagingService {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Repository is not part of this staging session");
     }
-    if (runtime.format() != RepositoryFormat.RAW) {
+    if (runtime.format() != RepositoryFormat.RAW && adapterFor(runtime.format()) == null) {
       throw new MavenExceptions.MethodNotAllowed(
-          "Staging writes are currently supported only for Raw repositories");
+          "Staging writes are not supported for " + runtime.format().id() + " repositories");
     }
     if (!runtime.isHosted()) {
       throw new MavenExceptions.MethodNotAllowed("Staging writes require a hosted repository");
@@ -1031,12 +1113,33 @@ public class StagingService {
     return targets;
   }
 
-  private static void requireStagingRepository(RepositoryRecord repository) {
-    if (repository.type() != RepositoryType.HOSTED || repository.format() != RepositoryFormat.RAW) {
+  private void requireStagingRepository(RepositoryRecord repository) {
+    if (repository.type() != RepositoryType.HOSTED) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST,
-          "Multi-repository staging currently supports RAW hosted repositories: " + repository.name());
+          "Multi-repository staging requires hosted repositories: " + repository.name());
     }
+    if (repository.format() != RepositoryFormat.RAW
+        && !contentAdapters.containsKey(repository.format())) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST,
+          "No staging adapter is available for " + repository.format().id()
+              + " repository " + repository.name());
+    }
+  }
+
+  private StagingContentAdapter adapterFor(RepositoryFormat format) {
+    return contentAdapters.get(format);
+  }
+
+  private static RepositoryFormat formatOf(StagingContentAdapter adapter) {
+    for (RepositoryFormat format : RepositoryFormat.values()) {
+      if (adapter.supports(format)) {
+        return format;
+      }
+    }
+    throw new IllegalStateException(
+        "Staging adapter supports no repository format: " + adapter.getClass().getName());
   }
 
   private ComponentRecord rawComponent(RepositoryRuntime runtime, String path) {
@@ -1074,8 +1177,11 @@ public class StagingService {
         item.contentType(),
         etag,
         item.updatedAt());
-    return response.withHeader("Content-Disposition",
-        runtime.rawContentDispositionOrDefault().toLowerCase(Locale.ROOT));
+    if (runtime.format() == RepositoryFormat.RAW) {
+      response = response.withHeader("Content-Disposition",
+          runtime.rawContentDispositionOrDefault().toLowerCase(Locale.ROOT));
+    }
+    return response;
   }
 
   private void releaseItemBlob(StagingItemRecord item) {

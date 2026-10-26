@@ -227,7 +227,7 @@ class StagingServiceTest {
           .thenReturn(com.github.klboke.kkrepo.auth.AccessDecision.deny("not admin"));
       service = new StagingService(
           staging, repositories, assets, blobReferences, runtimes, rawHosted,
-          blobStorageRegistry, audit, security, transactionManager(), 100);
+          blobStorageRegistry, audit, security, List.of(), transactionManager(), 100);
     }
 
     AssetBlobRecord blob(long id, String sha, long size) {
