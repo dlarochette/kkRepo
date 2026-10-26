@@ -414,7 +414,15 @@ public class RepositoryService {
 
   @Transactional
   public RepositoryView update(String name, UpdateCommand command) {
-    RepositoryRecord existing = repositoryDao.findByName(name)
+    RepositoryRecord observed = repositoryDao.findByName(name)
+        .orElseThrow(() -> new RepositoryNotFoundException(name));
+    if (routingRules != null) {
+      // Match migration's rule-before-repository lock order. Partial updates lock no rule.
+      routingRules.binding(observed.type(), command.routingRuleName(), null);
+    }
+    // Read the current committed binding under the row lock, including on MySQL RR:
+    // an earlier snapshot must not undo a concurrent assignment or removal.
+    RepositoryRecord existing = repositoryDao.lockByName(name)
         .orElseThrow(() -> new RepositoryNotFoundException(name));
     RepositoryRecipe recipe = RepositoryRecipes.byName(existing.recipeName())
         .orElseThrow(() -> new RepositoryValidationException(

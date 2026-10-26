@@ -767,7 +767,7 @@ public class TerraformService {
     }
     String bindingKey = sourceBindingKey(path.rawPath());
     Optional<TerraformRegistryDao.SourceBinding> existing = registry.findSourceBinding(group.id(), bindingKey);
-    if (existing.isPresent()) {
+    if (existing.isPresent() && group.containsMember(existing.get().memberRepositoryId())) {
       RepositoryRuntime member = runtimes.resolveById(existing.get().memberRepositoryId()).orElse(null);
       if (member != null) {
         try { return get(member, path, urls, headOnly); }

@@ -115,6 +115,50 @@ public abstract class PersistenceApiContract {
   }
 
   @Test
+  void repositoryLockPreservesRoutingBindingsCommittedAfterItsSnapshot() throws Exception {
+    var repositories = stores().repositories();
+    var rules = stores().routingRules();
+    String name = "routing-concurrent-contract";
+    long rule = rules.insert(name, "", "BLOCK", List.of("/private/.*"));
+    long repository = repositories.insert(new RepositoryRecord(null, name, RepositoryFormat.RAW,
+        RepositoryType.PROXY, "raw-proxy", true, null, null, "https://example.com/",
+        null, null, null, false, Map.of()));
+    CountDownLatch assigned = new CountDownLatch(1);
+    CountDownLatch snapshot = new CountDownLatch(1);
+    try (var executor = Executors.newFixedThreadPool(2)) {
+      var writer = executor.submit(() -> inTransaction(() -> {
+        rules.lockByName(name).orElseThrow();
+        repositories.lockByName(name).orElseThrow();
+        repositories.update(new RepositoryRecord(repository, name, RepositoryFormat.RAW,
+            RepositoryType.PROXY, "raw-proxy", true, null, rule, "https://example.com/",
+            null, null, null, false, Map.of()));
+        assigned.countDown();
+        awaitPolicyDeletionLatch(snapshot);
+        return null;
+      }));
+      assertTrue(assigned.await(10, java.util.concurrent.TimeUnit.SECONDS));
+      var updater = executor.submit(() -> inTransaction(() -> {
+        assertNull(repositories.findByName(name).orElseThrow().routingRuleId()); // Establish RR snapshot.
+        snapshot.countDown();
+        var current = repositories.lockByName(name).orElseThrow();
+        assertEquals(rule, current.routingRuleId());
+        repositories.update(new RepositoryRecord(repository, name, RepositoryFormat.RAW,
+            RepositoryType.PROXY, "raw-proxy", false, null, current.routingRuleId(),
+            "https://example.com/", null, null, null, false, Map.of()));
+        return null;
+      }));
+      writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+      updater.get(10, java.util.concurrent.TimeUnit.SECONDS);
+      assertEquals(rule, repositories.findByName(name).orElseThrow().routingRuleId());
+      assertFalse(repositories.findByName(name).orElseThrow().online());
+    } finally {
+      snapshot.countDown();
+      repositories.deleteById(repository);
+      rules.delete(rule);
+    }
+  }
+
+  @Test
   void blobStoreCredentialsRoundTripFromStaticToEmptyAndNull() {
     var dao = stores().blobStores();
     long id = dao.insert(new BlobStoreRecord(null, "s3-credentials-contract", "s3",

@@ -96,9 +96,13 @@ public class RepositoryProtocolDispatcher {
     RepositoryRuntime runtime = resolveRuntime(repositoryName, request);
     String path = routePath(repositoryName, request);
     if (routingPolicy != null) {
-      runtime = runtime.format() == RepositoryFormat.NPM
-          ? routingPolicy.prepare(runtime, path, request)
-          : routingPolicy.prepareRepository(runtime, request);
+      if (request.getAttribute(RepositorySecurityFilter.NORMALIZED_REPOSITORY_PATH_ATTRIBUTE) instanceof String) {
+        runtime = routingPolicy.prepareCanonical(runtime, path, request);
+      } else {
+        runtime = runtime.format() == RepositoryFormat.NPM
+            ? routingPolicy.prepare(runtime, path, request)
+            : routingPolicy.prepareRepository(runtime, request);
+      }
     }
     RouteKey key = new RouteKey(runtime.format(), runtime.type(), method);
     for (RegisteredRoute candidate : routes.getOrDefault(key, List.of())) {

@@ -118,36 +118,32 @@ class RepositoryRoutingPolicyTest {
     assertThrows(IllegalStateException.class, () -> policy.prepare(proxy, "/public/file", request()));
   }
 
-  @Test void matrixParametersFollowMvcWithoutReinterpretingEncodedSemicolons() {
+  @Test void canonicalIdentitiesAreNotDecodedAgainAndStillFilterGroups() {
     RepositoryRuntime proxy = runtime(1, RepositoryType.PROXY);
     RepositoryRuntime hosted = runtime(2, RepositoryType.HOSTED);
     RepositoryRuntime group = runtime(3, RepositoryType.GROUP).withMembers(List.of(proxy, hosted));
     when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/simple/private/.*")));
     assertThrows(RepositoryRoutingPolicy.Blocked.class,
-        () -> policy.prepareMvcRepository(proxy, mvcRequest("/simple;x=1/private;x=2/")));
-    assertEquals(List.of(hosted), policy.prepareMvcRepository(group, mvcRequest("/simple/private;x=2/")).members());
-    assertSame(proxy, policy.prepareMvcRepository(proxy, mvcRequest("/simple/private%3Bx=2/")));
-    assertSame(proxy, policy.prepareMvcRepository(proxy, mvcRequest("/simple/private%253Bx=2/")));
+        () -> policy.prepareCanonical(proxy, "simple/private/", request()));
+    assertEquals(List.of(hosted), policy.prepareCanonical(group, "simple/private/", request()).members());
+    assertSame(proxy, policy.prepareCanonical(proxy, "/simple/%70rivate/", request()));
+    assertSame(proxy, policy.prepareCanonical(proxy, "/simple/private;x=2/", request()));
+    var put = request(); put.setMethod("PUT");
+    assertSame(proxy, policy.prepareCanonical(proxy, "simple/private/", put));
   }
 
-  @Test void repositoryBoundaryUsesDecodedMvcSegmentsIncludingCustomPrefixAndContext() {
+  @Test void repositoryBoundarySupportsEncodedSegmentsCustomPrefixAndContext() {
     RepositoryRuntime proxy = runtime(1, RepositoryType.PROXY);
     when(rules.bindings()).thenReturn(List.of(binding("BLOCK", "/private/.*")));
     var request = request();
     request.setContextPath("/ctx");
     new com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix("/custom/repos")
         .onStartup(request.getServletContext());
-    request.setRequestURI("/ctx/custom;x=1/%72epos/%74est;y=2/%70rivate/file");
-    assertThrows(RepositoryRoutingPolicy.Blocked.class, () -> policy.prepareMvcRepository(proxy, request));
+    request.setRequestURI("/ctx/custom/%72epos/%74est/%70rivate/file");
+    assertThrows(RepositoryRoutingPolicy.Blocked.class, () -> policy.prepareRepository(proxy, request));
     var opaque = request();
     opaque.setRequestURI("/repository/test/%2570rivate/file");
     assertSame(proxy, policy.prepareRepository(proxy, opaque));
-  }
-
-  private MockHttpServletRequest mvcRequest(String path) {
-    var request = request();
-    request.setRequestURI("/repository/test" + path);
-    return request;
   }
 
   private Binding binding(String mode, String... matchers) {

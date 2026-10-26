@@ -28,6 +28,34 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class RepositoryProtocolDispatcherTest {
   @Test
+  void terraformRoutingUsesTheCredentialFreePathFromAuthentication() {
+    RepositoryRuntime proxy = runtime(RepositoryFormat.TERRAFORM, RepositoryType.PROXY);
+    RepositoryRuntime group = runtime(RepositoryFormat.TERRAFORM, RepositoryType.GROUP).withMembers(List.of(proxy));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+        new RoutingRuleDao.Rule(1, "private", "", "BLOCK", List.of("/v1/modules/private/.*")))));
+    for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+      for (RepositoryRuntime target : List.of(proxy, group)) {
+        RecordingHandler handler = handler(RepositoryProtocolRoute.anyPath(
+            RepositoryFormat.TERRAFORM, target.type(), method, 0), ResponseEntity.ok().build());
+        var dispatcher = dispatcher(target, handler);
+        dispatcher.setRoutingPolicy(new RepositoryRoutingPolicy(rules));
+        var request = request(method.name(), "/repository/repo/v1/modules/url-token/private/m/aws/versions");
+        request.setAttribute(RepositorySecurityFilter.NORMALIZED_REPOSITORY_PATH_ATTRIBUTE,
+            "v1/modules/private/m/aws/versions");
+        if (target.isProxy()) {
+          assertThrows(RepositoryRoutingPolicy.Blocked.class,
+              () -> dispatcher.dispatchRead("repo", request, method));
+          assertEquals(0, handler.invocations);
+        } else {
+          dispatcher.dispatchRead("repo", request, method);
+          assertTrue(handler.lastRequest.runtime().members().isEmpty());
+        }
+      }
+    }
+  }
+
+  @Test
   void npmRulesUseThePackageIdentityConsumedByHandlers() {
     RepositoryRuntime proxy = runtime(RepositoryFormat.NPM, RepositoryType.PROXY);
     RepositoryRuntime group = runtime(RepositoryFormat.NPM, RepositoryType.GROUP).withMembers(List.of(proxy));

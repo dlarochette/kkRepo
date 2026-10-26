@@ -41,28 +41,24 @@ public class RepositoryRoutingPolicy {
 
   /** Manual protocol handlers retain semicolons in asset paths. */
   public RepositoryRuntime prepareRepository(RepositoryRuntime runtime, HttpServletRequest request) {
-    return prepareRepository(runtime, request, false);
-  }
-
-  /** MVC path variables remove literal matrix parameters before resolving a resource. */
-  public RepositoryRuntime prepareMvcRepository(RepositoryRuntime runtime, HttpServletRequest request) {
-    return prepareRepository(runtime, request, true);
-  }
-
-  private RepositoryRuntime prepareRepository(
-      RepositoryRuntime runtime, HttpServletRequest request, boolean mvc) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
-    String uri = matchingPath(request.getRequestURI(), mvc);
-    String prefix = matchingPath(request.getContextPath() + RepositoryUrlPrefix.path(request), mvc);
+    String uri = matchingPath(request.getRequestURI());
+    String prefix = matchingPath(request.getContextPath() + RepositoryUrlPrefix.path(request));
     if (!uri.startsWith(prefix)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid repository path");
     int separator = uri.indexOf('/', prefix.length());
     return prepareMatchedPath(runtime, separator < 0 ? "/" : uri.substring(separator), request);
   }
 
+  /** Reuse an identity already parsed by authentication or the consuming protocol handler. */
+  public RepositoryRuntime prepareCanonical(RepositoryRuntime runtime, String path, HttpServletRequest request) {
+    if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
+    return prepareMatchedPath(runtime, canonicalPath(path), request);
+  }
+
   public RepositoryRuntime prepare(RepositoryRuntime runtime, String path, HttpServletRequest request) {
     if (!"GET".equals(request.getMethod()) && !"HEAD".equals(request.getMethod())) return runtime;
     return prepareMatchedPath(runtime, runtime.format() == RepositoryFormat.NPM
-        ? npmMatchingPath(path) : matchingPath(path, false), request);
+        ? npmMatchingPath(path) : matchingPath(path), request);
   }
 
   private static String npmMatchingPath(String raw) {
@@ -74,7 +70,7 @@ public class RepositoryRoutingPolicy {
       case PACKAGE_VERSION -> "/" + path.packageId().id() + "/" + path.packageVersion();
       case DIST_TAGS -> "/-/package/" + path.packageId().id() + "/dist-tags";
       case DIST_TAG -> "/-/package/" + path.packageId().id() + "/dist-tags/" + path.tag();
-      default -> matchingPath(raw, false);
+      default -> matchingPath(raw);
     };
   }
 
@@ -97,18 +93,18 @@ public class RepositoryRoutingPolicy {
     return project(runtime, (Context) request.getAttribute(CONTEXT));
   }
 
-  private static String matchingPath(String raw, boolean mvc) {
+  private static String matchingPath(String raw) {
     try {
-      // Strip matrix parameters only for MVC consumers. Manual protocol handlers
-      // retain semicolons, so their policy must evaluate that same asset identity.
+      // Manual protocol handlers retain semicolons as asset data. Already parsed
+      // MVC paths use prepareCanonical instead, avoiding another decode/parse pass.
       UriPathDecoder.decodeComponent(raw);
-      StringBuilder mvcPath = new StringBuilder();
+      StringBuilder decodedPath = new StringBuilder();
       for (PathContainer.Element element : PathContainer.parsePath(raw).elements()) {
-        mvcPath.append(element instanceof PathContainer.PathSegment segment
-            ? (mvc ? segment.valueToMatch() : UriPathDecoder.decodeComponent(segment.value()))
+        decodedPath.append(element instanceof PathContainer.PathSegment segment
+            ? UriPathDecoder.decodeComponent(segment.value())
                 .replace("/", "%2F") : element.value());
       }
-      return canonicalPath(mvcPath.toString());
+      return canonicalPath(decodedPath.toString());
     } catch (IllegalArgumentException invalid) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
     }

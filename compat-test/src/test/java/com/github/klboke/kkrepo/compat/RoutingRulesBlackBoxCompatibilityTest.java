@@ -25,6 +25,28 @@ class RoutingRulesBlackBoxCompatibilityTest {
       .connectTimeout(Duration.ofSeconds(15)).build();
 
   @Test
+  void pypiCanonicalProjectAliasesAreRejectedBeforeUpstreamAccess() throws Exception {
+    assumeTrue(Boolean.parseBoolean(CompatDefaults.setting("compat.routingRules", "ROUTING_RULES_COMPAT_ENABLED").orElse("false")));
+    assumeTrue(!Boolean.getBoolean("compat.routingRules.referenceOnly"));
+    Endpoint e = new Endpoint(CompatDefaults.nexusPlusBaseUrl().orElseThrow(),
+        CompatDefaults.nexusPlusUsername().orElseThrow(), CompatDefaults.nexusPlusPassword().orElseThrow(), false, "pypi");
+    String prefix = "rr452-" + UUID.randomUUID().toString().substring(0, 8);
+    String rule = prefix + "-rule", proxy = prefix + "-proxy", rules = "/service/rest/v1/routing-rules";
+    try {
+      check(e, "POST", rules, rule(rule, "BLOCK", List.of("/simple/private/.*", "/simple/private-name/.*")), 204);
+      // The missing upstream would return 404 if a request escaped the policy boundary.
+      e.create(proxy, "proxy", e.upstreamBase() + "/repository/" + prefix + "-missing/", rule, List.of());
+      for (String alias : List.of("private", "private/", "PRIVATE/", "Private__Name", "PRIVATE..NAME/", "private;x=1/")) {
+        check(e, "GET", "/repository/" + proxy + "/simple/" + alias, null, 403);
+        check(e, "HEAD", "/repository/" + proxy + "/simple/" + alias, null, 403);
+      }
+    } finally {
+      e.removeRepository(proxy);
+      e.send("DELETE", rules + "/" + rule, null);
+    }
+  }
+
+  @Test
   void npmCachedPackageIdentityCannotBypassRoutingRules() throws Exception {
     assumeTrue(Boolean.parseBoolean(CompatDefaults.setting("compat.routingRules", "ROUTING_RULES_COMPAT_ENABLED").orElse("false")));
     var endpoints = new java.util.ArrayList<Endpoint>();
