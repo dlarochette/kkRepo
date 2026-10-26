@@ -1,8 +1,9 @@
 # Multi-Repository Staging Design
 
-Status: implemented foundation and Raw hosted staging. The durable lifecycle, session API, staged
-content isolation, preflight and single-transaction promotion are available for Raw repositories.
-Other formats and staged group membership remain future work (phases 3-5 below).
+Status: implemented for Raw, Maven, npm, PyPI, Helm, Open VSX, and Arch Linux hosted repositories.
+The durable lifecycle, temporary session credentials, staged content isolation, preflight and
+single-transaction promotion are available, together with Nexus-shaped asset/component/repository
+and status APIs. Cross-format group membership remains future work (phases 3-5 below).
 
 Implementation notes:
 
