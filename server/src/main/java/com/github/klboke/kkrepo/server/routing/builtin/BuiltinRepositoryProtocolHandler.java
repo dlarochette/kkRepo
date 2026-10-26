@@ -180,6 +180,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   private final RawProxyService rawProxy;
   private final RawGroupService rawGroup;
   private StagingHttpSupport stagingHttp;
+  private com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget;
   private final ObjectMapper objectMapper;
   private final ForwardedHeaderPolicy forwardedHeaderPolicy;
   private final MavenPathParser parser = new MavenPathParser();
@@ -244,6 +245,12 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
   @Autowired(required = false)
   public void setStagingHttpSupport(StagingHttpSupport stagingHttp) {
     this.stagingHttp = stagingHttp;
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setGroupWriteTargetService(
+      com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget) {
+    this.groupWriteTarget = groupWriteTarget;
   }
 
   @Autowired
@@ -543,6 +550,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
       HttpServletRequest request,
       String contentType)
       throws IOException, ServletException {
+    runtime = writeRuntime(runtime);
     String userId = requestUserId(request);
     if (runtime.format() == RepositoryFormat.NPM) {
       String rawPath = extractRepositoryPath(name, request);
@@ -755,6 +763,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
 
   private ResponseEntity<?> delete(
       RepositoryRuntime runtime, String name, HttpServletRequest request) throws IOException {
+    runtime = writeRuntime(runtime);
     if (runtime.format() == RepositoryFormat.NPM) {
       String rawPath = extractRepositoryPath(name, request);
       if (NpmTokenService.isLogoutPath(rawPath)) {
@@ -850,6 +859,7 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
 
   private ResponseEntity<?> post(
       RepositoryRuntime runtime, String name, HttpServletRequest request) {
+    runtime = writeRuntime(runtime);
     if (runtime.format() == RepositoryFormat.HUGGINGFACE) {
       String raw = extractRepositoryPath(name, request, true);
       try (InputStream body = request.getInputStream()) {
@@ -1616,6 +1626,13 @@ public class BuiltinRepositoryProtocolHandler implements RepositoryProtocolHandl
 
   private MavenResponse npmWhoami(HttpServletRequest request, boolean headOnly) {
     return npmJson(Map.of("username", requestUserId(request)), headOnly);
+  }
+
+  private RepositoryRuntime writeRuntime(RepositoryRuntime runtime) {
+    if (runtime.isGroup() && groupWriteTarget != null) {
+      return groupWriteTarget.requireWriteTarget(runtime);
+    }
+    return runtime;
   }
 
   private String requestUserId(HttpServletRequest request) {
