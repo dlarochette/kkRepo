@@ -166,6 +166,24 @@ public class JdbcStagingDao implements StagingDao {
   }
 
   @Override
+  public List<StagingSessionRecord> listExpiredActive(Instant now, int limit) {
+    return jdbcTemplate.query("""
+        SELECT * FROM staging_session
+        WHERE state IN (?, ?, ?)
+          AND expires_at IS NOT NULL
+          AND expires_at < ?
+        ORDER BY expires_at, id
+        LIMIT ?
+        """,
+        sessionMapper,
+        StagingDao.SESSION_OPEN,
+        StagingDao.SESSION_FROZEN,
+        StagingDao.SESSION_PREFLIGHTED,
+        nullableTimestamp(now),
+        Math.max(1, Math.min(limit, 500)));
+  }
+
+  @Override
   public boolean transitionSession(
       long id,
       long expectedRevision,
