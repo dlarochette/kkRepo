@@ -96,6 +96,16 @@ public class NugetService {
     };
   }
 
+  UploadPlan planPackage(Path nupkg) throws IOException {
+    NugetPackageMetadata metadata = readPackageMetadata(nupkg);
+    return new UploadPlan(
+        NugetPaths.flatContainerPackage(metadata.id(), metadata.version()),
+        metadata.id(), metadata.version());
+  }
+
+  record UploadPlan(String packagePath, String id, String version) {
+  }
+
   public MavenResponse putPackage(
       RepositoryRuntime runtime,
       String rawPath,
