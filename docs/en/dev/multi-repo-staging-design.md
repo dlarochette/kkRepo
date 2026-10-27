@@ -438,13 +438,13 @@ Current format coverage:
 | Helm | yes | `index.yaml` | `HelmStagingContentAdapter` |
 | NuGet | yes | registration/index regeneration pending | `NugetStagingContentAdapter` |
 | RubyGems | yes | `specs.4.8.gz` regeneration pending | `RubygemsStagingContentAdapter` |
-| Cargo | yes | sparse index regeneration pending | `CargoStagingContentAdapter` |
+| Cargo | yes | sparse index | `CargoStagingContentAdapter` |
 | Swift | yes | registry index regeneration pending | `SwiftStagingContentAdapter` |
 | Pub | yes | package listing regeneration pending | `PubStagingContentAdapter` |
 | Composer | yes | `packages.json` regeneration pending | `ComposerStagingContentAdapter` |
 | Conan | yes | n/a (clients query revisions directly) | `ConanStagingContentAdapter` |
 | Terraform | yes | provider index regeneration pending | `TerraformStagingContentAdapter` |
-| Go | yes | `@v/list` regeneration pending | `GoStagingContentAdapter` |
+| Go | yes | `@v/list` | `GoStagingContentAdapter` |
 | Conda | yes | `repodata.json` regeneration pending | `CondaStagingContentAdapter` |
 | Ansible | yes | collection index regeneration pending | `AnsibleStagingContentAdapter` |
 | Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
@@ -461,11 +461,11 @@ Current limitations:
 
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
-- Except for Maven, npm, PyPI, Helm and Docker tags, generated indexes are rebuilt from live
-  content only. Staged packages are visible individually and are published correctly at promotion,
-  but a client that resolves them through an index (Yum/APT/Alpine/R/Conda, NuGet, RubyGems, Cargo,
-  Composer, Terraform, Go, Pub, Ansible, Swift) will not see them until that format's
-  staging-aware index generation lands.
+- Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes and Go `@v/list`, generated
+  indexes are rebuilt from live content only. Staged packages are visible individually and are
+  published correctly at promotion, but a client that resolves them through an index
+  (Yum/APT/Alpine/R/Conda, NuGet, RubyGems, Composer, Terraform, Pub, Ansible, Swift) will not see
+  them until that format's staging-aware index generation lands.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
   session row stays visible for reporting until an operator deletes it.
 - Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
