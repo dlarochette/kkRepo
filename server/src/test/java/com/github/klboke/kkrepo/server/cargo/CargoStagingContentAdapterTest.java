@@ -39,6 +39,14 @@ class CargoStagingContentAdapterTest {
   }
 
   @Test
+  void mapsSparseIndexDownloadRequestsToTheStagedArchive() {
+    assertEquals("crates/demo/1.0.0/demo-1.0.0.crate",
+        adapter.normalizePath("crates/demo/1.0.0/download").orElseThrow());
+    assertEquals("crates/demo/1.0.0/demo-1.0.0.crate",
+        adapter.normalizePath("crates/demo/1.0.0/demo-1.0.0.crate").orElseThrow());
+  }
+
+  @Test
   void preflightRejectsDeletesAndExistingVersions() {
     RepositoryRecord repository = new RepositoryRecord(
         1L, "cargo-hosted", RepositoryFormat.CARGO, RepositoryType.HOSTED, "cargo-hosted",

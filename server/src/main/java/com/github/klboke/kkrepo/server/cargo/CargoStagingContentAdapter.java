@@ -63,6 +63,13 @@ final class CargoStagingContentAdapter implements StagingContentAdapter {
     String path = rawPath == null ? "" : rawPath.trim();
     while (path.startsWith("/")) path = path.substring(1);
     if (path.isEmpty() || path.contains("..")) return Optional.empty();
+    // Sparse-index clients ask for /crates/{name}/{version}/download while staged crates are
+    // stored under the canonical archive name, so both spellings resolve to the same item.
+    CargoPath parsed = PARSER.parse(path);
+    if (parsed.kind() == CargoPath.Kind.DOWNLOAD
+        && parsed.crateName() != null && parsed.version() != null) {
+      return Optional.of(CargoAssetWriter.cratePath(parsed.crateName(), parsed.version()));
+    }
     return Optional.of(path);
   }
 
