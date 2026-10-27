@@ -69,6 +69,13 @@ public class PubStagingService {
     attributes.put("pubSession", session.sessionId());
     attributes.put("pubPackage", session.packageName());
     attributes.put("pubVersion", session.version());
+    if (session.pubspec() != null) {
+      attributes.put("pubspec", session.pubspec());
+    }
+    if (session.sha256() != null) {
+      attributes.put("archiveSha256", session.sha256());
+    }
+    attributes.put("publishedAt", Instant.now().toString());
     staging.stageExternalBlob(
         runtime, stagingSession, path, blob.id(), "application/octet-stream", attributes,
         subject, ip);
