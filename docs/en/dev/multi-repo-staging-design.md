@@ -448,7 +448,7 @@ Current format coverage:
 | Conda | yes | `repodata.json` regeneration pending | `CondaStagingContentAdapter` |
 | Ansible | yes | collection index regeneration pending | `AnsibleStagingContentAdapter` |
 | Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
-| Yum | yes | `repomd.xml`/primary regeneration pending | `YumStagingContentAdapter` |
+| Yum | yes | `repomd.xml` + primary/filelists/other | `YumStagingContentAdapter` |
 | APT | yes | `Packages`/`Release` regeneration pending | `AptStagingContentAdapter` |
 | Alpine | yes | `APKINDEX` regeneration pending | `AlpineStagingContentAdapter` |
 | R | yes | `PACKAGES` regeneration pending | `RStagingContentAdapter` |
@@ -461,11 +461,11 @@ Current limitations:
 
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
-- Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list` and Pub package
-  metadata, generated indexes are rebuilt from live content only. Staged packages are visible
-  individually and are published correctly at promotion, but a client that resolves them through an
-  index (Yum/APT/Alpine/R/Conda, NuGet, RubyGems, Composer, Terraform, Ansible, Swift) will not see
-  them until that format's staging-aware index generation lands.
+- Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list`, Pub package
+  metadata and Yum repodata, generated indexes are rebuilt from live content only. Staged packages
+  are visible individually and are published correctly at promotion, but a client that resolves
+  them through an index (APT/Alpine/R/Conda, NuGet, RubyGems, Composer, Terraform, Ansible, Swift)
+  will not see them until that format's staging-aware index generation lands.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
   session row stays visible for reporting until an operator deletes it.
 - Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
