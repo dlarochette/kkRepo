@@ -440,7 +440,7 @@ Current format coverage:
 | RubyGems | yes | `specs.4.8.gz` regeneration pending | `RubygemsStagingContentAdapter` |
 | Cargo | yes | sparse index | `CargoStagingContentAdapter` |
 | Swift | yes | registry index regeneration pending | `SwiftStagingContentAdapter` |
-| Pub | yes | package listing regeneration pending | `PubStagingContentAdapter` |
+| Pub | yes | package metadata | `PubStagingContentAdapter` |
 | Composer | yes | `packages.json` regeneration pending | `ComposerStagingContentAdapter` |
 | Conan | yes | n/a (clients query revisions directly) | `ConanStagingContentAdapter` |
 | Terraform | yes | provider index regeneration pending | `TerraformStagingContentAdapter` |
@@ -461,10 +461,10 @@ Current limitations:
 
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
-- Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes and Go `@v/list`, generated
-  indexes are rebuilt from live content only. Staged packages are visible individually and are
-  published correctly at promotion, but a client that resolves them through an index
-  (Yum/APT/Alpine/R/Conda, NuGet, RubyGems, Composer, Terraform, Pub, Ansible, Swift) will not see
+- Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list` and Pub package
+  metadata, generated indexes are rebuilt from live content only. Staged packages are visible
+  individually and are published correctly at promotion, but a client that resolves them through an
+  index (Yum/APT/Alpine/R/Conda, NuGet, RubyGems, Composer, Terraform, Ansible, Swift) will not see
   them until that format's staging-aware index generation lands.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
   session row stays visible for reporting until an operator deletes it.
