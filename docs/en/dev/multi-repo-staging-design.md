@@ -446,7 +446,7 @@ Current format coverage:
 | Terraform | yes | provider index regeneration pending | `TerraformStagingContentAdapter` |
 | Go | yes | `@v/list` | `GoStagingContentAdapter` |
 | Conda | yes | `repodata.json` regeneration pending | `CondaStagingContentAdapter` |
-| Ansible | yes | collection index regeneration pending | `AnsibleStagingContentAdapter` |
+| Ansible | yes | collection version list + detail | `AnsibleStagingContentAdapter` |
 | Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
 | Yum | yes | `repomd.xml` + primary/filelists/other | `YumStagingContentAdapter` |
 | APT | yes | `Packages`/`Release` regeneration pending | `AptStagingContentAdapter` |
@@ -463,10 +463,11 @@ Current limitations:
   and cross-format members are rejected during preflight.
 - Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list`, Pub package
   metadata, Yum repodata, R `PACKAGES.gz`, the RubyGems compact index, Composer `p2` metadata and
-  the NuGet registration/version indexes, generated indexes are rebuilt from live content only.
-  Staged packages are visible individually and are published correctly at promotion, but a client
-  that resolves them through an index (APT/Alpine/Conda, Terraform, Ansible, Swift) will not see
-  them until that format's staging-aware index generation lands.
+  the NuGet registration/version indexes and the Ansible Galaxy version list/detail, generated
+  indexes are rebuilt from live content only. Staged packages are visible individually and are
+  published correctly at promotion, but a client that resolves them through an index
+  (APT/Alpine/Conda, Terraform, Swift) will not see them until that format's staging-aware index
+  generation lands.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
   session row stays visible for reporting until an operator deletes it.
 - Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
