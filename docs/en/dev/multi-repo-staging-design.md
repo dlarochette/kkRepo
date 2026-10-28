@@ -441,7 +441,7 @@ Current format coverage:
 | Cargo | yes | sparse index | `CargoStagingContentAdapter` |
 | Swift | yes | registry index regeneration pending | `SwiftStagingContentAdapter` |
 | Pub | yes | package metadata | `PubStagingContentAdapter` |
-| Composer | yes | `packages.json` regeneration pending | `ComposerStagingContentAdapter` |
+| Composer | yes | `p2/{vendor}/{package}.json` | `ComposerStagingContentAdapter` |
 | Conan | yes | n/a (clients query revisions directly) | `ConanStagingContentAdapter` |
 | Terraform | yes | provider index regeneration pending | `TerraformStagingContentAdapter` |
 | Go | yes | `@v/list` | `GoStagingContentAdapter` |
@@ -462,11 +462,11 @@ Current limitations:
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
 - Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list`, Pub package
-  metadata, Yum repodata, R `PACKAGES.gz` and the RubyGems compact index, generated indexes are
-  rebuilt from live content only. Staged packages are visible individually and are published
-  correctly at promotion, but a client that resolves them through an index (APT/Alpine/Conda, NuGet,
-  Composer, Terraform, Ansible, Swift) will not see them until that format's staging-aware index
-  generation lands.
+  metadata, Yum repodata, R `PACKAGES.gz`, the RubyGems compact index and Composer `p2` metadata,
+  generated indexes are rebuilt from live content only. Staged packages are visible individually
+  and are published correctly at promotion, but a client that resolves them through an index
+  (APT/Alpine/Conda, NuGet, Terraform, Ansible, Swift) will not see them until that format's
+  staging-aware index generation lands.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
   session row stays visible for reporting until an operator deletes it.
 - Concurrent direct live writes are revalidated at promotion; an ADD that loses the race fails
