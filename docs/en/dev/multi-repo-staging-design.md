@@ -450,7 +450,7 @@ Current format coverage:
 | Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
 | Yum | yes | `repomd.xml` + primary/filelists/other | `YumStagingContentAdapter` |
 | APT | yes | `Packages`/`Release` regeneration pending | `AptStagingContentAdapter` |
-| Alpine | yes | `APKINDEX` regeneration pending | `AlpineStagingContentAdapter` |
+| Alpine | yes | signed `APKINDEX.tar.gz` | `AlpineStagingContentAdapter` |
 | R | yes | `PACKAGES.gz` | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
 | Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
@@ -466,8 +466,8 @@ Current limitations:
   the NuGet registration/version indexes, the Ansible Galaxy version list/detail, the Swift release
   list/metadata and Terraform provider metadata, generated indexes are rebuilt from live content
   only. Staged packages are visible individually and are published correctly at promotion, but a
-  client that resolves them through an index (APT/Alpine/Conda) will not see them until that
-  format's staging-aware index generation lands.
+  client that resolves them through an index (APT/Conda) will not see them until that format's
+  staging-aware index generation lands.
 - Swift staging serves the package's default `Package.swift`; alternate tools-version manifests
   (`Package@swift-X.swift`) and their `Link` alternates are advertised after promotion.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
