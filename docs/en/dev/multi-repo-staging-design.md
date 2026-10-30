@@ -454,7 +454,7 @@ Current format coverage:
 | R | yes | `PACKAGES.gz` | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
 | Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
-| Open VSX | yes | extension JSON view | `feat/staging-openvsx` |
+| Open VSX | yes | extension metadata JSON | `OpenVsxStagingContentAdapter` |
 | Hugging Face | n/a | n/a | proxy-only format, no hosted writes yet |
 
 Current limitations:
@@ -462,8 +462,8 @@ Current limitations:
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
 - Every hosted format handled by this branch exposes a staging-aware index, so clients resolve
-  staged content before promotion. Arch `.db`/`.files` and Open VSX extension metadata are
-  delivered in the stacked format PRs.
+  staged content before promotion. Arch `.db`/`.files` is delivered in #457. Open VSX search/query
+  endpoints (`SEARCH`, `QUERY`, `VSCODE_QUERY`) remain live-only until promotion.
 - Swift staging serves the package's default `Package.swift`; alternate tools-version manifests
   (`Package@swift-X.swift`) and their `Link` alternates are advertised after promotion.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
