@@ -36,6 +36,12 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.mockito.ArgumentCaptor;
 
 class RServiceTest {
@@ -51,6 +57,51 @@ class RServiceTest {
   private final RepositoryRuntimeRegistry runtimes = mock(RepositoryRuntimeRegistry.class);
   private final RepositoryRuntime hosted = runtime(1L, RepositoryType.HOSTED, "ALLOW", List.of());
   private RService service;
+
+  @AfterEach
+  void clearRoutingRequest() { RequestContextHolder.resetRequestAttributes(); }
+
+  @Test
+  void allowedPinnedHostedPackageDoesNotRefreshUnrelatedProxyUnderRoutingPolicy() {
+    RepositoryRuntime unhealthy = runtime(2L, RepositoryType.PROXY, "ALLOW", List.of());
+    RepositoryRuntime group = runtime(3L, RepositoryType.GROUP, "ALLOW", List.of(unhealthy, hosted));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(unhealthy.id(),
+        new RoutingRuleDao.Rule(1, "rule", "", "BLOCK", List.of("/never")))));
+    var request = new MockHttpServletRequest("GET", "/repository/group/" + PATH);
+    RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+    RepositoryRuntime projected = initializedPolicy(rules).prepare(group, PATH, request);
+    when(published.find(group.id(), "src/contrib")).thenReturn(Optional.of(snapshot(group.id(), 9L, Map.of())));
+    var binding = new RRegistryDao.GroupBinding(1L, group.id(), "src/contrib", 9L, PATH,
+        hosted.id(), 4L, PATH, "a".repeat(32), "b".repeat(64), 12L, Instant.EPOCH);
+    when(registry.findGroupBinding(group.id(), "src/contrib", 9L, PATH)).thenReturn(Optional.of(binding));
+    when(runtimes.resolveById(hosted.id())).thenReturn(Optional.of(hosted));
+    when(proxy.prepareGroupMember(eq(unhealthy), any(Instant.class)))
+        .thenThrow(new MavenExceptions.BadUpstreamException("Malformed PACKAGES.gz"));
+    assertEquals(200, service.get(projected, PATH, false).status());
+    verify(assets).serve(hosted, PATH, false);
+    verify(proxy, never()).prepareGroupMember(any(), any());
+  }
+
+  @Test
+  void deniedPinnedProxyBindingIsNeverServedFromPublishedGroupSnapshot() {
+    RepositoryRuntime denied = runtime(2L, RepositoryType.PROXY, "ALLOW", List.of());
+    RepositoryRuntime group = runtime(3L, RepositoryType.GROUP, "ALLOW", List.of(denied));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(denied.id(),
+        new RoutingRuleDao.Rule(1, "rule", "", "BLOCK", List.of("/src/.*")))));
+    var request = new MockHttpServletRequest("GET", "/repository/group/" + PATH);
+    RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+    RepositoryRuntime projected = initializedPolicy(rules).prepare(group, PATH, request);
+    when(published.find(group.id(), "src/contrib")).thenReturn(Optional.of(snapshot(group.id(), 9L,
+        Map.of("@members", RService.fingerprint(Map.of())))));
+    var binding = new RRegistryDao.GroupBinding(1L, group.id(), "src/contrib", 9L, PATH,
+        denied.id(), 4L, PATH, "a".repeat(32), "b".repeat(64), 12L, Instant.EPOCH);
+    when(registry.findGroupBinding(group.id(), "src/contrib", 9L, PATH)).thenReturn(Optional.of(binding));
+    assertThrows(MavenExceptions.MavenNotFoundException.class, () -> service.get(projected, PATH, false));
+    verify(proxy, never()).getBoundGroupPackage(any(), any(), anyBoolean());
+    verify(runtimes, never()).resolveById(denied.id());
+  }
 
   @BeforeEach
   void setUp() {
@@ -76,6 +127,17 @@ class RServiceTest {
         snapshot(1L, 1L, Map.of("src/contrib/PACKAGES.gz", ".r/index"))));
     when(registry.savePackage(any())).thenAnswer(invocation -> withId(
         invocation.getArgument(0), 50L, 1L));
+  }
+
+  @Test
+  void refusesSnapshotPublishedForAnotherMemberProjection() {
+    RepositoryRuntime group = runtime(3L, RepositoryType.GROUP, "ALLOW", List.of());
+    when(published.find(group.id(), "src/contrib")).thenReturn(Optional.of(snapshot(group.id(), 1L,
+        Map.of("src/contrib/PACKAGES.gz", ".r/denied", "@members", "another-projection"))));
+    var failure = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+        () -> service.get(group, "src/contrib/PACKAGES.gz", false));
+    assertEquals(503, failure.getStatusCode().value());
+    verify(assets, never()).serve(eq(group), anyString(), anyBoolean());
   }
 
   @Test
@@ -584,5 +646,10 @@ class RServiceTest {
         1L, writePolicy, null, null, true,
         type == RepositoryType.PROXY ? "https://example.invalid/" : null,
         60, 60, true, null, members);
+  }
+  private static RepositoryRoutingPolicy initializedPolicy(RoutingRuleDao rules) {
+    var policy = new RepositoryRoutingPolicy(rules);
+    policy.initialize();
+    return policy;
   }
 }

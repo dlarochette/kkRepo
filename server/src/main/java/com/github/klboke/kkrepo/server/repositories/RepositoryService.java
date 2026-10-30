@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.repositories;
 
+import com.github.klboke.kkrepo.server.routingrules.RoutingRuleService;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryRecipe;
 import com.github.klboke.kkrepo.core.RepositoryRecipes;
@@ -42,6 +43,7 @@ import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.ProxySett
 import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.PypiSettings;
 import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.YumSettings;
 import com.github.klboke.kkrepo.server.yum.YumMetadataDepth;
+import com.github.klboke.kkrepo.server.yum.YumMetadataCleanup;
 import com.github.klboke.kkrepo.server.conan.ConanManifestPolicy;
 import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.ConanSettings;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryIndexRebuildDao;
@@ -69,6 +71,7 @@ import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -81,6 +84,13 @@ public class RepositoryService {
   private static final Set<String> MAVEN_LAYOUT_POLICIES = Set.of("STRICT", "PERMISSIVE");
   private static final Set<String> RAW_CONTENT_DISPOSITIONS = Set.of("INLINE", "ATTACHMENT");
   private static final int MAX_PROXY_REDIRECT_HOSTS = 64;
+
+  private RoutingRuleService routingRules;
+
+  @Autowired
+  void setRoutingRules(RoutingRuleService routingRules) {
+    this.routingRules = routingRules;
+  }
 
   private final RepositoryDao repositoryDao;
   private final BlobStoreDao blobStoreDao;
@@ -108,6 +118,7 @@ public class RepositoryService {
   private RRegistryDao rRegistry;
   private HuggingFaceRegistryDao huggingFaceRegistry;
   private DockerMigrationMetadataCleanup dockerMigrationCleanup;
+  private YumMetadataCleanup yumMetadataCleanup;
   private CleanupPolicyDao cleanupPolicies;
   private RepositoryIndexRebuildDao indexRebuildDao;
 
@@ -115,6 +126,11 @@ public class RepositoryService {
   void setDockerMigrationCleanup(
       DockerMigrationMetadataCleanup dockerMigrationCleanup) {
     this.dockerMigrationCleanup = dockerMigrationCleanup;
+  }
+
+  @Autowired
+  void setYumMetadataCleanup(YumMetadataCleanup yumMetadataCleanup) {
+    this.yumMetadataCleanup = yumMetadataCleanup;
   }
 
   @Autowired
@@ -366,7 +382,8 @@ public class RepositoryService {
 
     RepositoryRecord toInsert = new RepositoryRecord(
         null, name, recipe.format(), recipe.type(), recipe.name(), online,
-        blobStoreId, null, proxyRemoteUrl, versionPolicy, layoutPolicy, writePolicy,
+        blobStoreId, routingRules == null ? null : routingRules.binding(recipe.type(), command.routingRuleName(), null),
+        proxyRemoteUrl, versionPolicy, layoutPolicy, writePolicy,
         strict, attributes);
     long id = repositoryDao.insert(toInsert);
 
@@ -408,7 +425,15 @@ public class RepositoryService {
 
   @Transactional
   public RepositoryView update(String name, UpdateCommand command) {
-    RepositoryRecord existing = repositoryDao.findByName(name)
+    RepositoryRecord observed = repositoryDao.findByName(name)
+        .orElseThrow(() -> new RepositoryNotFoundException(name));
+    if (routingRules != null) {
+      // Match migration's rule-before-repository lock order. Partial updates lock no rule.
+      routingRules.binding(observed.type(), command.routingRuleName(), null);
+    }
+    // Read the current committed binding under the row lock, including on MySQL RR:
+    // an earlier snapshot must not undo a concurrent assignment or removal.
+    RepositoryRecord existing = repositoryDao.lockByName(name)
         .orElseThrow(() -> new RepositoryNotFoundException(name));
     RepositoryRecipe recipe = RepositoryRecipes.byName(existing.recipeName())
         .orElseThrow(() -> new RepositoryValidationException(
@@ -504,7 +529,8 @@ public class RepositoryService {
 
     RepositoryRecord toUpdate = new RepositoryRecord(
         existing.id(), existing.name(), existing.format(), existing.type(), existing.recipeName(),
-        online, blobStoreId, existing.routingRuleId(), proxyRemoteUrl,
+        online, blobStoreId, routingRules == null ? existing.routingRuleId()
+            : routingRules.binding(recipe.type(), command.routingRuleName(), existing.routingRuleId()), proxyRemoteUrl,
         versionPolicy, layoutPolicy, writePolicy, strict, attributes);
     repositoryDao.update(toUpdate);
     if (rebuildYumMetadata && indexRebuildDao != null) {
@@ -581,7 +607,7 @@ public class RepositoryService {
     return get(name);
   }
 
-  @Transactional
+  @Transactional(isolation = Isolation.READ_COMMITTED)
   public void delete(String name) {
     RepositoryRecord existing = repositoryDao.findByName(name)
         .orElseThrow(() -> new RepositoryNotFoundException(name));
@@ -599,6 +625,10 @@ public class RepositoryService {
     if (existing.format() == RepositoryFormat.DOCKER && dockerMigrationCleanup != null
         && repositoryDao.hasComponents(existing.id())) {
       dockerMigrationCleanup.cleanupBeforeRepositoryDeletion(existing.id());
+    }
+    if (existing.format() == RepositoryFormat.YUM && existing.type() == RepositoryType.HOSTED
+        && yumMetadataCleanup != null) {
+      yumMetadataCleanup.cleanupBeforeRepositoryDeletion(existing.id());
     }
     if (repositoryDao.hasComponents(existing.id())) {
       throw new RepositoryValidationException(
@@ -1239,7 +1269,8 @@ public class RepositoryService {
         record.format() == RepositoryFormat.YUM && record.type() == RepositoryType.HOSTED
             ? new YumSettings(YumMetadataDepth.read(record.attributes())) : null,
         record.format() == RepositoryFormat.CONAN && record.type() != RepositoryType.GROUP
-            ? ConanManifestPolicy.read(record.attributes()) : null);
+            ? ConanManifestPolicy.read(record.attributes()) : null,
+        routingRules == null ? null : routingRules.name(record.routingRuleId()));
   }
 
   private Map<Long, String> blobStoreNameIndex() {

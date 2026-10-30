@@ -60,6 +60,8 @@ public interface PersistenceStores extends AutoCloseable {
 
   RepositoryDao repositories();
 
+  RoutingRuleDao routingRules();
+
   RepositoryDataMigrationDao repositoryDataMigrations();
 
   RepositoryIndexRebuildDao repositoryIndexRebuild();

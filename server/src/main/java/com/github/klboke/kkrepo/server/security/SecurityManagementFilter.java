@@ -76,6 +76,11 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
       // The controller enforces the selector create OR update permission for preview.
       return Optional.of(AUTHENTICATED_ONLY);
     }
+    if (uri.equals("/service/rest/v1/routing-rules")
+        || uri.startsWith("/service/rest/v1/routing-rules/")
+        || uri.startsWith("/internal/routing-rules/")) {
+      return Optional.of("nexus:*");
+    }
     if (uri.startsWith("/service/rest/v1/security/")) {
       return serviceRestPermission(method, uri);
     }

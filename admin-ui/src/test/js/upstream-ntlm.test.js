@@ -14,6 +14,7 @@ function form(repo) {
     return elements.get(id);
   };
   const context = {
+    window: { KkRoutingRules: { loadOptions: () => {} } },
     document: { getElementById: element, querySelectorAll: () => [] },
     repositories: repo ? [repo] : [],
     repositoryFormMode: 'create', repositoryRequiredFields: [],

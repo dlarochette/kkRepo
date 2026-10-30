@@ -26,7 +26,30 @@ public final class RepositoryCommands {
       AlpineSettings alpine,
       PypiSettings pypi,
       YumSettings yum,
-      ConanSettings conan) {
+      ConanSettings conan,
+      @com.fasterxml.jackson.annotation.JsonAlias("routingRule") String routingRuleName) {
+    /** Compatibility constructor for repository clients without routing rules. */
+    public CreateCommand(
+        String name,
+        String recipe,
+        Boolean online,
+        String blobStoreName,
+        Boolean strictContentTypeValidation,
+        HostedSettings hosted,
+        ProxySettings proxy,
+        RawSettings raw,
+        DockerSettings docker,
+        CargoSettings cargo,
+        GroupSettings group,
+        AptSettings apt,
+        AlpineSettings alpine,
+        PypiSettings pypi,
+        YumSettings yum,
+        ConanSettings conan) {
+      this(name, recipe, online, blobStoreName, strictContentTypeValidation, hosted, proxy, raw,
+          docker, cargo, group, apt, alpine, pypi, yum, conan, null);
+    }
+
     /** Compatibility constructor for callers without Conan manifest overrides. */
     public CreateCommand(
         String name,
@@ -135,7 +158,28 @@ public final class RepositoryCommands {
       AlpineSettings alpine,
       PypiSettings pypi,
       YumSettings yum,
-      ConanSettings conan) {
+      ConanSettings conan,
+      @com.fasterxml.jackson.annotation.JsonAlias("routingRule") String routingRuleName) {
+    /** Compatibility constructor for repository clients without routing rules. */
+    public UpdateCommand(
+        Boolean online,
+        String blobStoreName,
+        Boolean strictContentTypeValidation,
+        HostedSettings hosted,
+        ProxySettings proxy,
+        RawSettings raw,
+        DockerSettings docker,
+        CargoSettings cargo,
+        GroupSettings group,
+        AptSettings apt,
+        AlpineSettings alpine,
+        PypiSettings pypi,
+        YumSettings yum,
+        ConanSettings conan) {
+      this(online, blobStoreName, strictContentTypeValidation, hosted, proxy, raw,
+          docker, cargo, group, apt, alpine, pypi, yum, conan, null);
+    }
+
     /** Compatibility constructor for callers without Conan manifest overrides. */
     public UpdateCommand(
         Boolean online,

@@ -4688,3 +4688,5 @@ code {
   white-space: nowrap;
   cursor: pointer;
 }
+
+.routing-rule-matchers { white-space: pre-wrap; overflow-wrap: anywhere; font-family: monospace; }
