@@ -1,3 +1,11 @@
+-- kkQuality foundation schema (see docs/en/dev/kkquality-design.md).
+--
+-- Issues are stored once per (project, branch, fingerprint) so a second analysis of an unchanged
+-- tree never duplicates rows; kkq_issue_occurrence links an issue to every analysis that observed
+-- it, which is what "new issues versus the previous analysis" and the issue history are built from.
+-- A project may be bound to a kkRepo repository: the binding scopes read authorization, so the
+-- Sonar-compatible API is multi-tenant instead of global.
+
 CREATE TABLE kkq_project (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   external_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -5,11 +13,15 @@ CREATE TABLE kkq_project (
   name VARCHAR(255) NOT NULL,
   organization VARCHAR(255) NULL,
   visibility VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'private',
+  repository_id BIGINT UNSIGNED NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uk_kkq_project_external_id (external_id),
-  UNIQUE KEY uk_kkq_project_key (project_key)
+  UNIQUE KEY uk_kkq_project_key (project_key),
+  UNIQUE KEY uk_kkq_project_repository (repository_id),
+  CONSTRAINT fk_kkq_project_repository
+    FOREIGN KEY (repository_id) REFERENCES repository(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE kkq_branch (
@@ -48,6 +60,7 @@ CREATE TABLE kkq_analysis (
   revision VARCHAR(255) NULL,
   sarif_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   issue_count INT NOT NULL DEFAULT 0,
+  new_issue_count INT NOT NULL DEFAULT 0,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   started_at DATETIME(3) NULL,
   completed_at DATETIME(3) NULL,
@@ -55,6 +68,7 @@ CREATE TABLE kkq_analysis (
   PRIMARY KEY (id),
   UNIQUE KEY uk_kkq_analysis_external_id (analysis_id),
   INDEX idx_kkq_analysis_project (project_id, created_at),
+  INDEX idx_kkq_analysis_branch (project_id, branch_id, created_at),
   INDEX idx_kkq_analysis_status (status, created_at),
   CONSTRAINT fk_kkq_analysis_project
     FOREIGN KEY (project_id) REFERENCES kkq_project(id) ON DELETE CASCADE,
@@ -64,30 +78,53 @@ CREATE TABLE kkq_analysis (
 
 CREATE TABLE kkq_issue (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  analysis_id BIGINT UNSIGNED NOT NULL,
   project_id BIGINT UNSIGNED NOT NULL,
-  branch_id BIGINT UNSIGNED NULL,
-  issue_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  branch_id BIGINT UNSIGNED NOT NULL,
+  issue_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  analysis_id BIGINT UNSIGNED NULL,
   file_path VARCHAR(1024) NOT NULL,
   line INT NULL,
+  end_line INT NULL,
   engine VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
   rule_key VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
   severity VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
   issue_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
   message TEXT NULL,
   status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'OPEN',
+  resolution VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
   assignee VARCHAR(255) NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  creation_date DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  update_date DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  closed_at DATETIME(3) NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_kkq_issue_key (issue_key),
-  INDEX idx_kkq_issue_analysis (analysis_id),
-  INDEX idx_kkq_issue_project (project_id, status),
+  UNIQUE KEY uk_kkq_issue_fingerprint (project_id, branch_id, issue_key),
+  INDEX idx_kkq_issue_search (project_id, branch_id, status, severity),
   INDEX idx_kkq_issue_rule (engine, rule_key),
-  CONSTRAINT fk_kkq_issue_analysis
-    FOREIGN KEY (analysis_id) REFERENCES kkq_analysis(id) ON DELETE CASCADE,
+  INDEX idx_kkq_issue_analysis (analysis_id),
+  INDEX idx_kkq_issue_resolution (project_id, branch_id, resolution),
   CONSTRAINT fk_kkq_issue_project
-    FOREIGN KEY (project_id) REFERENCES kkq_project(id) ON DELETE CASCADE
+    FOREIGN KEY (project_id) REFERENCES kkq_project(id) ON DELETE CASCADE,
+  CONSTRAINT fk_kkq_issue_branch
+    FOREIGN KEY (branch_id) REFERENCES kkq_branch(id) ON DELETE CASCADE,
+  CONSTRAINT fk_kkq_issue_analysis
+    FOREIGN KEY (analysis_id) REFERENCES kkq_analysis(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE kkq_issue_occurrence (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  issue_id BIGINT UNSIGNED NOT NULL,
+  analysis_id BIGINT UNSIGNED NOT NULL,
+  line INT NULL,
+  end_line INT NULL,
+  message_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_kkq_occurrence (issue_id, analysis_id),
+  INDEX idx_kkq_occurrence_analysis (analysis_id),
+  CONSTRAINT fk_kkq_occurrence_issue
+    FOREIGN KEY (issue_id) REFERENCES kkq_issue(id) ON DELETE CASCADE,
+  CONSTRAINT fk_kkq_occurrence_analysis
+    FOREIGN KEY (analysis_id) REFERENCES kkq_analysis(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE kkq_quality_gate (

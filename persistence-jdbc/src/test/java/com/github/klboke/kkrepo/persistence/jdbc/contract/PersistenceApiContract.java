@@ -6653,47 +6653,143 @@ public abstract class PersistenceApiContract {
     }
   }
   @Test
-  void kkQualityProjectsAnalysesIssuesRulesAndGatesRoundTrip() {
+  void kkQualityRoundTripKeepsIssuesUniqueAcrossRepeatedAnalyses() {
     com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao dao = stores().kkQuality();
     String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
     Instant now = Instant.now();
+    String projectKey = "project-" + suffix;
     String externalId = java.util.UUID.randomUUID().toString();
     long projectId = dao.insertProject(
-        externalId, "project-" + suffix, "Project", "org", "private", now);
-    assertEquals(projectId, dao.findProjectByKey("project-" + suffix).orElseThrow().id());
+        externalId, projectKey, "Project", "org", "private", null, now);
+    assertEquals(projectId, dao.findProjectByKey(projectKey).orElseThrow().id());
     assertEquals(projectId, dao.findProjectByExternalId(externalId).orElseThrow().id());
-    assertTrue(dao.updateProject(projectId, "project-" + suffix, "Project 2", "org", "public", now));
-    long branchId = dao.insertBranch(projectId, "main", true, now);
-    assertTrue(dao.findBranch(projectId, "main").isPresent());
-    String analysisExternalId = java.util.UUID.randomUUID().toString();
-    long analysisId = dao.insertAnalysis(
-        new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Analysis(
-            0L, projectId, branchId, analysisExternalId, "PENDING", null, null, 0,
-            now, null, null, null));
-    assertEquals("PENDING",
-        dao.findAnalysisByExternalId(analysisExternalId).orElseThrow().status());
-    assertTrue(dao.updateAnalysis(analysisId, "COMPLETE", 1, "a".repeat(64), null, now, now));
+    assertNull(dao.findProjectByKey(projectKey).orElseThrow().repositoryId());
+    assertTrue(dao.updateProject(projectId, projectKey, "Project 2", "org", "public", now));
+
+    long mainBranch = dao.insertBranch(projectId, "main", true, now);
+    long featureBranch = dao.insertBranch(projectId, "feature", false, now);
+    assertTrue(dao.lockBranch(mainBranch));
+
+    String fingerprint = "fingerprint-" + suffix;
+    long analysis1 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
+        .KkQualityDao.Analysis(
+            0L, projectId, mainBranch, java.util.UUID.randomUUID().toString(), "RUNNING", "rev-1",
+            null, 0, 0, now, now, null, null));
+    long issue1 = dao.insertIssue(
+        projectId, mainBranch, fingerprint, analysis1, "src/App.java", 10, 12, "semgrep",
+        "rule-1", "MAJOR", "CODE_SMELL", "Avoid this", now);
+    long issue2 = dao.insertIssue(
+        projectId, mainBranch, "fingerprint2-" + suffix, analysis1, "src/Db.java", 41, 41,
+        "semgrep", "rule-2", "BLOCKER", "VULNERABILITY", "SQL injection", now);
+    dao.insertOccurrence(issue1, analysis1, 10, 12, "h1", now);
+    dao.insertOccurrence(issue2, analysis1, 41, 41, "h2", now);
+    assertTrue(dao.completeAnalysis(analysis1, 2, 2, "a".repeat(64), now));
+    assertEquals(2, dao.countIssues(projectId, mainBranch, null));
+    assertEquals(2, dao.countNewIssues(projectId, mainBranch, analysis1));
+
+    // A second analysis of an unchanged tree must not duplicate issues nor report them as new.
+    long analysis2 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
+        .KkQualityDao.Analysis(
+            0L, projectId, mainBranch, java.util.UUID.randomUUID().toString(), "RUNNING", "rev-2",
+            null, 0, 0, now, now, null, null));
+    dao.observeIssue(issue1, analysis2, "src/App.java", 11, 13, "MAJOR", "CODE_SMELL",
+        "Avoid this", now);
+    dao.observeIssue(issue2, analysis2, "src/Db.java", 41, 41, "BLOCKER", "VULNERABILITY",
+        "SQL injection", now);
+    dao.insertOccurrence(issue1, analysis2, 11, 13, "h1", now);
+    dao.insertOccurrence(issue2, analysis2, 41, 41, "h2", now);
+    assertTrue(dao.completeAnalysis(analysis2, 2, 0, "b".repeat(64), now));
+    assertEquals(2, dao.countIssues(projectId, mainBranch, null));
+    assertEquals(0, dao.countNewIssues(projectId, mainBranch, analysis2));
+    assertEquals(11, dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().line());
+
+    // The identical fingerprint on another branch is a distinct issue.
+    long featureIssue = dao.insertIssue(
+        projectId, featureBranch, fingerprint, analysis2, "src/App.java", 10, 12, "semgrep",
+        "rule-1", "MAJOR", "CODE_SMELL", "Avoid this", now);
+    dao.insertOccurrence(featureIssue, analysis2, 10, 12, "h1", now);
+    assertEquals(1, dao.countIssues(projectId, featureBranch, null));
+    assertEquals(3, dao.countIssues(projectId, null, null));
+
+    // A duplicate fingerprint on the same branch is rejected by the unique constraint.
+    org.junit.jupiter.api.Assertions.assertThrows(
+        org.springframework.dao.DataAccessException.class,
+        () -> dao.insertIssue(
+            projectId, mainBranch, fingerprint, analysis1, "src/App.java", 10, 12, "semgrep",
+            "rule-1", "MAJOR", "CODE_SMELL", "Avoid this", now));
+
+    // Filters are applied in SQL, including facets.
+    assertEquals(1, dao.countIssues(projectId, mainBranch, new com.github.klboke.kkrepo.persistence
+        .jdbc.api.KkQualityDao.IssueFilter(
+            List.of("OPEN"), null, List.of("VULNERABILITY"), null, null, null, null, null, null)));
+    assertEquals(1, dao.countIssues(projectId, mainBranch, new com.github.klboke.kkrepo.persistence
+        .jdbc.api.KkQualityDao.IssueFilter(
+            null, null, null, null, null, null, null, null, "injection")));
+    assertEquals(1, dao.countOpenIssuesByType(projectId, mainBranch).stream()
+        .filter(count -> "VULNERABILITY".equals(count.key())).findFirst().orElseThrow().count());
+
+    // An issue the next analysis does not observe is closed, then reopened when it comes back.
+    long analysis3 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
+        .KkQualityDao.Analysis(
+            0L, projectId, mainBranch, java.util.UUID.randomUUID().toString(), "RUNNING", "rev-3",
+            null, 0, 0, now, now, null, null));
+    dao.observeIssue(issue2, analysis3, "src/Db.java", 41, 41, "BLOCKER", "VULNERABILITY",
+        "SQL injection", now);
+    dao.insertOccurrence(issue2, analysis3, 41, 41, "h2", now);
+    assertEquals(1, dao.closeUnseenIssues(projectId, mainBranch, analysis3, now));
+    assertEquals("CLOSED", dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().status());
+    assertEquals("REMOVED",
+        dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().resolution());
+    // Both rows still belong to the branch: one open, one closed.
+    assertEquals(2, dao.countIssues(projectId, mainBranch, null));
+    assertEquals(1, dao.countIssues(projectId, mainBranch, new com.github.klboke.kkrepo
+        .persistence.jdbc.api.KkQualityDao.IssueFilter(
+            List.of("OPEN"), null, null, null, null, null, null, null, null)));
+
+    long analysis4 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
+        .KkQualityDao.Analysis(
+            0L, projectId, mainBranch, java.util.UUID.randomUUID().toString(), "RUNNING", "rev-4",
+            null, 0, 0, now, now, null, null));
+    dao.observeIssue(issue1, analysis4, "src/App.java", 10, 12, "MAJOR", "CODE_SMELL",
+        "Avoid this", now);
+    dao.insertOccurrence(issue1, analysis4, 10, 12, "h1", now);
+    assertEquals("REOPENED",
+        dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().status());
+    assertNull(dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().closedAt());
+
+    assertTrue(dao.updateIssueState(
+        projectId, mainBranch, fingerprint, "FALSE_POSITIVE", "FALSE_POSITIVE", "alice", now));
+    var marked = dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow();
+    assertEquals("FALSE_POSITIVE", marked.resolution());
+    assertEquals("alice", marked.assignee());
+    assertNotNull(marked.closedAt());
+
+    // Rules are global reference data and must be idempotent.
     dao.upsertRule("semgrep", "rule-1", "Rule", "MAJOR", "java", "desc", "fix", now);
-    assertEquals(1, dao.countRules("semgrep", "rule"));
-    dao.replaceIssues(analysisId, List.of(
-        new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Issue(
-            0L, analysisId, projectId, branchId, "issue-" + suffix, "src/App.java", 10,
-            "semgrep", "rule-1", "MAJOR", "CODE_SMELL", "message", "OPEN", null, now, now)));
-    assertEquals(1, dao.countIssues(projectId, "OPEN", "rule-1", "MAJOR"));
-    assertEquals(1, dao.listIssues(projectId, "OPEN", null, null, 10, 0).size());
-    assertTrue(dao.updateIssue("issue-" + suffix, "CONFIRMED", "alice", now));
-    dao.replaceMeasures(analysisId, List.of(
+    dao.upsertRule("semgrep", "rule-1", "Rule renamed", "MAJOR", "java", "desc2", "fix2", now);
+    assertEquals(1, dao.countRules("semgrep", "rule-1"));
+    assertEquals("Rule renamed", dao.findRule("semgrep", "rule-1").orElseThrow().name());
+
+    dao.replaceMeasures(analysis4, List.of(
         new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Measure(
-            analysisId, "bugs", new java.math.BigDecimal("1"), null)));
-    assertEquals(1, dao.listMeasures(analysisId).size());
+            analysis4, "bugs", new java.math.BigDecimal("1"), null)));
+    assertEquals(1, dao.listMeasures(analysis4).size());
+
     long gateId = dao.insertQualityGate(
-        projectId, java.util.UUID.randomUUID().toString(), "Gate",
+        null, java.util.UUID.randomUUID().toString(), "Gate",
         List.of(Map.of("metric", "bugs", "operator", "GREATER_THAN", "value", "0")),
         true, now);
-    assertTrue(dao.listQualityGates(projectId).stream().anyMatch(gate -> gate.id() == gateId));
     assertTrue(dao.findDefaultQualityGate().isPresent());
+    dao.clearDefaultQualityGates();
+    assertTrue(dao.findDefaultQualityGate().isEmpty());
+    assertTrue(dao.listQualityGates(projectId).stream().anyMatch(gate -> gate.id() == gateId));
+    assertTrue(dao.deleteQualityGate(gateId));
+
+    assertEquals(4, dao.countAnalyses(projectId));
+    assertEquals(2, dao.listBranches(projectId).size());
     assertTrue(dao.deleteProject(projectId));
-    assertTrue(dao.findAnalysis(analysisId).isEmpty());
+    assertTrue(dao.findAnalysis(analysis1).isEmpty());
+    assertEquals(0, dao.countIssues(projectId, null, null));
   }
 
 }
