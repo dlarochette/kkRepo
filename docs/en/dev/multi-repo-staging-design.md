@@ -445,7 +445,7 @@ Current format coverage:
 | Conan | yes | n/a (clients query revisions directly) | `ConanStagingContentAdapter` |
 | Terraform | yes | provider versions, download metadata, SHA256SUMS + signature | `TerraformStagingContentAdapter` |
 | Go | yes | `@v/list` | `GoStagingContentAdapter` |
-| Conda | yes | `repodata.json` regeneration pending | `CondaStagingContentAdapter` |
+| Conda | yes | `repodata.json` (+ bz2/zst) | `CondaStagingContentAdapter` |
 | Ansible | yes | collection version list + detail | `AnsibleStagingContentAdapter` |
 | Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
 | Yum | yes | `repomd.xml` + primary/filelists/other | `YumStagingContentAdapter` |
@@ -464,10 +464,10 @@ Current limitations:
 - Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list`, Pub package
   metadata, Yum repodata, R `PACKAGES.gz`, the RubyGems compact index, Composer `p2` metadata and
   the NuGet registration/version indexes, the Ansible Galaxy version list/detail, the Swift release
-  list/metadata and Terraform provider metadata, generated indexes are rebuilt from live content
-  only. Staged packages are visible individually and are published correctly at promotion, but a
-  client that resolves them through an index (APT/Conda) will not see them until that format's
-  staging-aware index generation lands.
+  list/metadata, Terraform provider metadata and Conda repodata, generated indexes are rebuilt from
+  live content only. Staged packages are visible individually and are published correctly at
+  promotion, but a client that resolves them through an index (APT) will not see them until that
+  format's staging-aware index generation lands.
 - Swift staging serves the package's default `Package.swift`; alternate tools-version manifests
   (`Package@swift-X.swift`) and their `Link` alternates are advertised after promotion.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
