@@ -179,14 +179,17 @@ public class StagingService {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Staging expiry must be in the future");
     }
     Map<String, Object> sessionAttributes = new LinkedHashMap<>();
-    if (request.attributes() != null) {
-      request.attributes().forEach((key, value) -> {
-        if (key != null && value != null && !isReservedAttribute(key)) {
-          sessionAttributes.put(key, value);
-        }
-      });
-    }
-    if (Boolean.TRUE.equals(request.approvalRequired())) {
+    Map<String, Object> requestedAttributes =
+        request.attributes() == null ? Map.of() : request.attributes();
+    requestedAttributes.forEach((key, value) -> {
+      if (key != null && value != null && !isReservedAttribute(key)) {
+        sessionAttributes.put(key, value);
+      }
+    });
+    // The approval policy may be requested through the top-level field or its historical
+    // attribute form; both mean "require a second pair of eyes", never "drop the requirement".
+    if (Boolean.TRUE.equals(request.approvalRequired())
+        || Boolean.TRUE.equals(requestedAttributes.get("approvalRequired"))) {
       sessionAttributes.put("approvalRequired", true);
     }
     long id = staging.insertSession(new StagingSessionRecord(
@@ -304,13 +307,8 @@ public class StagingService {
     Instant expiresAt = request == null || request.expiresAt() == null
         ? session.expiresAt()
         : request.expiresAt();
-    Map<String, Object> attributes = request == null || request.attributes() == null
-        ? session.attributes()
-        : request.attributes();
-    if (attributes.keySet().stream().anyMatch(StagingService::isReservedAttribute)) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "Approval attributes are managed by the approve endpoint");
-    }
+    Map<String, Object> attributes = mergedAttributes(
+        session, request == null ? null : request.attributes());
     if (expiresAt != null && !expiresAt.isAfter(Instant.now())) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Staging expiry must be in the future");
     }
@@ -2090,7 +2088,44 @@ public class StagingService {
   private static boolean isReservedAttribute(String key) {
     return "approvedBySource".equals(key)
         || "approvedByUserId".equals(key)
-        || "approvedAt".equals(key);
+        || "approvedAt".equals(key)
+        || "approvalRequired".equals(key)
+        || StagingCredentialService.TOKEN_ID_ATTRIBUTE.equals(key)
+        || StagingCredentialService.TOKEN_ISSUED_AT_ATTRIBUTE.equals(key);
+  }
+
+  /**
+   * Applies a metadata replacement while preserving every server-owned attribute.
+   *
+   * <p>{@code stagingTokenId} identifies the session credential and {@code approvalRequired} plus
+   * the approval proof drive the four-eyes gate. They must survive a {@code PATCH {}} and a partial
+   * metadata replacement, and a client may not forge or weaken them explicitly.
+   */
+  private static Map<String, Object> mergedAttributes(
+      StagingSessionRecord session, Map<String, Object> replacement) {
+    Map<String, Object> existing =
+        session.attributes() == null ? Map.of() : session.attributes();
+    if (replacement == null) {
+      return existing;
+    }
+    if (replacement.keySet().stream().anyMatch(
+        key -> key != null && isReservedAttribute(key))) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST,
+          "Approval and credential attributes are managed by kkRepo");
+    }
+    Map<String, Object> merged = new LinkedHashMap<>();
+    existing.forEach((key, value) -> {
+      if (key != null && value != null && isReservedAttribute(key)) {
+        merged.put(key, value);
+      }
+    });
+    replacement.forEach((key, value) -> {
+      if (key != null && value != null && !isReservedAttribute(key)) {
+        merged.put(key, value);
+      }
+    });
+    return merged;
   }
 
   private static String sha256Hex(String value) {

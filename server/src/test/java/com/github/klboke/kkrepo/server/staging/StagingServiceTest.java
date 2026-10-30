@@ -140,6 +140,107 @@ class StagingServiceTest {
     verify(fixture.blobReferences, never()).releaseOwner(any(), anyLong());
   }
 
+  @Test
+  void createHonoursAnApprovalRequirementSuppliedInAttributes() {
+    Fixture fixture = new Fixture();
+    when(fixture.staging.insertSession(any())).thenReturn(1L);
+
+    fixture.service.create(
+        new StagingService.CreateSessionRequest(
+            "release", List.of(), null, null,
+            Map.of("approvalRequired", true, "team", "core"), null),
+        ALICE, "127.0.0.1");
+
+    var inserted = org.mockito.ArgumentCaptor.forClass(StagingSessionRecord.class);
+    verify(fixture.staging).insertSession(inserted.capture());
+    assertEquals(true, inserted.getValue().attributes().get("approvalRequired"));
+    assertEquals("core", inserted.getValue().attributes().get("team"));
+  }
+
+  @Test
+  void updateRejectsAnExplicitApprovalRequirementChange() {
+    Fixture fixture = new Fixture();
+    fixture.session.set(
+        session(StagingDao.SESSION_OPEN, 0, Map.of("approvalRequired", true)));
+    when(fixture.staging.updateSessionMetadata(anyLong(), anyLong(), any(), any()))
+        .thenReturn(true);
+
+    org.springframework.web.server.ResponseStatusException error =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            org.springframework.web.server.ResponseStatusException.class,
+            () -> fixture.service.update(
+                1L,
+                new StagingService.UpdateSessionRequest(
+                    null, Map.of("approvalRequired", false)),
+                ALICE, "127.0.0.1"));
+
+    assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, error.getStatusCode());
+    verify(fixture.staging, never()).updateSessionMetadata(anyLong(), anyLong(), any(), any());
+  }
+
+  @Test
+  void updateRejectsCredentialIdentityInjection() {
+    Fixture fixture = new Fixture();
+    fixture.session.set(session(StagingDao.SESSION_OPEN, 0));
+    when(fixture.staging.updateSessionMetadata(anyLong(), anyLong(), any(), any()))
+        .thenReturn(true);
+
+    org.springframework.web.server.ResponseStatusException error =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            org.springframework.web.server.ResponseStatusException.class,
+            () -> fixture.service.update(
+                1L,
+                new StagingService.UpdateSessionRequest(null, Map.of("stagingTokenId", 999)),
+                ALICE, "127.0.0.1"));
+
+    assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, error.getStatusCode());
+    verify(fixture.staging, never()).updateSessionMetadata(anyLong(), anyLong(), any(), any());
+  }
+
+  @Test
+  void updatePreservesApprovalAndCredentialStateAcrossAMetadataReplacement() {
+    Fixture fixture = new Fixture();
+    fixture.session.set(session(StagingDao.SESSION_OPEN, 0, Map.of(
+        "approvalRequired", true,
+        "stagingTokenId", 9,
+        "stagingTokenIssuedAt", "2026-01-01T00:00:00Z",
+        "team", "old")));
+    when(fixture.staging.updateSessionMetadata(anyLong(), anyLong(), any(), any()))
+        .thenReturn(true);
+
+    fixture.service.update(
+        1L,
+        new StagingService.UpdateSessionRequest(null, Map.of("team", "new")),
+        ALICE, "127.0.0.1");
+
+    var attributes = org.mockito.ArgumentCaptor.forClass(Map.class);
+    verify(fixture.staging).updateSessionMetadata(eq(1L), anyLong(), any(), attributes.capture());
+    Map<?, ?> stored = (Map<?, ?>) attributes.getValue();
+    assertEquals(true, stored.get("approvalRequired"));
+    assertEquals(9, stored.get("stagingTokenId"));
+    assertEquals("2026-01-01T00:00:00Z", stored.get("stagingTokenIssuedAt"));
+    assertEquals("new", stored.get("team"));
+  }
+
+  @Test
+  void emptyReplacementKeepsApprovalButDropsUserMetadata() {
+    Fixture fixture = new Fixture();
+    fixture.session.set(session(StagingDao.SESSION_OPEN, 0, Map.of(
+        "approvalRequired", true, "stagingTokenId", 9, "team", "old")));
+    when(fixture.staging.updateSessionMetadata(anyLong(), anyLong(), any(), any()))
+        .thenReturn(true);
+
+    fixture.service.update(
+        1L, new StagingService.UpdateSessionRequest(null, Map.of()), ALICE, "127.0.0.1");
+
+    var attributes = org.mockito.ArgumentCaptor.forClass(Map.class);
+    verify(fixture.staging).updateSessionMetadata(eq(1L), anyLong(), any(), attributes.capture());
+    Map<?, ?> stored = (Map<?, ?>) attributes.getValue();
+    assertEquals(true, stored.get("approvalRequired"));
+    assertEquals(9, stored.get("stagingTokenId"));
+    assertFalse(stored.containsKey("team"));
+  }
+
   private static String manifest(List<StagingItemRecord> items) {
     StringBuilder value = new StringBuilder();
     items.forEach(item -> value.append("item").append('\u0000')
@@ -165,11 +266,16 @@ class StagingServiceTest {
   }
 
   private static StagingSessionRecord session(String state, long revision) {
+    return session(state, revision, Map.of());
+  }
+
+  private static StagingSessionRecord session(
+      String state, long revision, Map<String, Object> attributes) {
     Instant now = Instant.now();
     return new StagingSessionRecord(
         1L, "release", state, revision, "Local", "alice", now, now,
         state.equals(StagingDao.SESSION_OPEN) ? null : now,
-        null, now.plus(1, ChronoUnit.DAYS), null, Map.of());
+        null, now.plus(1, ChronoUnit.DAYS), null, attributes);
   }
 
   private static AssetRecord liveAsset(long blobId) {
