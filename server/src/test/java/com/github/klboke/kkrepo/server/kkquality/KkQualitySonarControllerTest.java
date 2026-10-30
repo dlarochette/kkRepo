@@ -192,10 +192,10 @@ class KkQualitySonarControllerTest {
 
   @Test
   void rulesSearchKeysRulesByEngine() {
-    when(dao.listRules(eq(null), eq("xss"), eq(100), eq(0))).thenReturn(List.of(
+    when(dao.listRules(eq(null), eq("xss"), eq(List.of()), eq(100), eq(0))).thenReturn(List.of(
         new Rule(1L, "semgrep", "rule-1", "XSS", "MAJOR", "java", "desc", null, CREATED,
             CREATED)));
-    when(dao.countRules(null, "xss")).thenReturn(1L);
+    when(dao.countRules(null, "xss", List.of())).thenReturn(1L);
 
     Map<String, Object> body = controller.searchRules("xss", null, null, null, 100, null, request);
 
@@ -203,6 +203,21 @@ class KkQualitySonarControllerTest {
     assertEquals("semgrep:rule-1", rules.get(0).get("key"));
     assertEquals("semgrep", rules.get(0).get("repo"));
     assertEquals(1L, body.get("total"));
+  }
+
+  @Test
+  void rulesSearchPushesTheLanguageFilterIntoTheQuery() {
+    when(dao.listRules(eq(null), eq(null), eq(List.of("java", "kotlin")), eq(50), eq(0)))
+        .thenReturn(List.of(new Rule(
+            1L, "semgrep", "rule-1", "XSS", "MAJOR", "java", "desc", null, CREATED, CREATED)));
+    when(dao.countRules(null, null, List.of("java", "kotlin"))).thenReturn(1L);
+
+    Map<String, Object> body = controller.searchRules(
+        null, "java,kotlin", null, null, 50, null, request);
+
+    assertEquals(1L, body.get("total"));
+    assertEquals(1, ((List<?>) body.get("rules")).size());
+    verify(dao).countRules(null, null, List.of("java", "kotlin"));
   }
 
   @Test

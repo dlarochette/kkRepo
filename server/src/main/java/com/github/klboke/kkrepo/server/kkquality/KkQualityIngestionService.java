@@ -11,9 +11,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Branch;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Issue;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Measure;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Project;
-import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.BlobStoreRecord;
-import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
 import com.github.klboke.kkrepo.server.maven.BlobStorageRegistry;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -68,7 +66,6 @@ public class KkQualityIngestionService {
   private static final List<String> TYPES = List.of("BUG", "VULNERABILITY", "CODE_SMELL");
 
   private final KkQualityDao dao;
-  private final RepositoryDao repositories;
   private final BlobStoreDao blobStores;
   private final BlobStorageRegistry storages;
   private final ObjectMapper objectMapper;
@@ -76,11 +73,10 @@ public class KkQualityIngestionService {
   private final TransactionTemplate transactions;
 
   public KkQualityIngestionService(
-      KkQualityDao dao, RepositoryDao repositories, BlobStoreDao blobStores,
-      BlobStorageRegistry storages, ObjectMapper objectMapper, KkQualityProperties properties,
+      KkQualityDao dao, BlobStoreDao blobStores, BlobStorageRegistry storages,
+      ObjectMapper objectMapper, KkQualityProperties properties,
       TransactionTemplate transactions) {
     this.dao = dao;
-    this.repositories = repositories;
     this.blobStores = blobStores;
     this.storages = storages;
     this.objectMapper = objectMapper;
@@ -96,17 +92,24 @@ public class KkQualityIngestionService {
       String project, String projectName, String branch, String revision, String repository,
       JsonNode sarif) {}
 
-  public AnalysisStatusView ingest(IngestRequest request) {
+  /**
+   * Ingests one analysis on behalf of a caller the controller already authorized.
+   *
+   * <p>{@code repositoryId} is the resolved project tenant (an existing binding wins over the
+   * repository named in the payload); it is re-validated inside the transaction so a concurrent
+   * binding cannot be overwritten by a caller authorized for another repository.
+   */
+  public AnalysisStatusView ingest(IngestRequest request, Long repositoryId) {
     try {
-      return transactions.execute(status -> doIngest(request));
+      return transactions.execute(status -> doIngest(request, repositoryId));
     } catch (DuplicateKeyException conflict) {
       // A concurrent replica inserted the same rule (or project) first. Re-running is safe: the
       // SARIF blob is content-addressed and issue writes are keyed by fingerprint.
-      return transactions.execute(status -> doIngest(request));
+      return transactions.execute(status -> doIngest(request, repositoryId));
     }
   }
 
-  private AnalysisStatusView doIngest(IngestRequest request) {
+  private AnalysisStatusView doIngest(IngestRequest request, Long repositoryId) {
     if (request == null) {
       throw badRequest("An analysis payload is required");
     }
@@ -119,7 +122,6 @@ public class KkQualityIngestionService {
     // creating a project, a branch or an analysis row.
     Parsed parsed = parse(document);
 
-    Long repositoryId = resolveRepositoryId(request.repository());
     Project project = ensureProject(projectKey, request.projectName(), repositoryId);
     Branch branch = ensureBranch(project.id(), branchName);
     if (!dao.lockBranch(branch.id())) {
@@ -173,19 +175,17 @@ public class KkQualityIngestionService {
     return view(dao.findAnalysis(id).orElseThrow(), project, branchName);
   }
 
-  private Long resolveRepositoryId(String repository) {
-    if (repository == null || repository.isBlank()) {
-      return null;
-    }
-    return repositories.findByName(repository.trim())
-        .map(RepositoryRecord::id)
-        .orElseThrow(() -> badRequest("Unknown repository " + repository));
-  }
-
   private Project ensureProject(String key, String name, Long repositoryId) {
     Optional<Project> existing = dao.findProjectByKey(key);
     if (existing.isPresent()) {
       Project project = existing.get();
+      if (repositoryId != null && project.repositoryId() != null
+          && !repositoryId.equals(project.repositoryId())) {
+        // Defence in depth: the controller already resolved the binding, but the project may have
+        // been bound by another replica between that check and this transaction.
+        throw new ResponseStatusException(
+            HttpStatus.FORBIDDEN, "Project " + key + " is bound to another repository");
+      }
       if (repositoryId != null && project.repositoryId() == null) {
         dao.bindRepository(project.id(), repositoryId, Instant.now());
         return dao.findProject(project.id()).orElse(project);

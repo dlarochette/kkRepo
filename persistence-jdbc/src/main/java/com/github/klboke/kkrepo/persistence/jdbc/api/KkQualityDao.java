@@ -164,9 +164,10 @@ public interface KkQualityDao {
 
   Optional<Rule> findRule(String engine, String ruleKey);
 
-  List<Rule> listRules(String engine, String query, int limit, int offset);
+  /** Rules filtered by engine, free-text query and language set; the language filter is in SQL. */
+  List<Rule> listRules(String engine, String query, List<String> languages, int limit, int offset);
 
-  long countRules(String engine, String query);
+  long countRules(String engine, String query, List<String> languages);
 
   long insertQualityGate(
       Long projectId, String externalId, String name, List<Map<String, Object>> conditions,

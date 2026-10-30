@@ -22,7 +22,6 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Analysis;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Branch;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Issue;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Project;
-import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.BlobStoreRecord;
 import com.github.klboke.kkrepo.server.maven.BlobStorageRegistry;
 import java.io.InputStream;
@@ -73,7 +72,6 @@ class KkQualityIngestionServiceTest {
   @BeforeEach
   void setUp() {
     dao = mock(KkQualityDao.class);
-    RepositoryDao repositories = mock(RepositoryDao.class);
     BlobStoreDao blobStores = mock(BlobStoreDao.class);
     BlobStorageRegistry storages = mock(BlobStorageRegistry.class);
     storage = mock(BlobStorage.class);
@@ -93,7 +91,18 @@ class KkQualityIngestionServiceTest {
             invocation.getArgument(3)));
 
     service = new KkQualityIngestionService(
-        dao, repositories, blobStores, storages, objectMapper, properties, transactions);
+        dao, blobStores, storages, objectMapper, properties, transactions);
+  }
+
+  /** The controller resolves the tenant before calling the service; these tests bind none. */
+  private KkQualityIngestionService.AnalysisStatusView ingest(
+      KkQualityIngestionService.IngestRequest request) {
+    return service.ingest(request, null);
+  }
+
+  private KkQualityIngestionService.AnalysisStatusView ingestWithRepository(
+      KkQualityIngestionService.IngestRequest request, Long repositoryId) {
+    return service.ingest(request, repositoryId);
   }
 
   @Test
@@ -109,7 +118,7 @@ class KkQualityIngestionServiceTest {
     when(dao.countNewIssues(5L, 9L, 11L)).thenReturn(1L);
     when(dao.findAnalysis(11L)).thenReturn(Optional.of(analysis(11L, 1, 1)));
 
-    KkQualityIngestionService.AnalysisStatusView view = service.ingest(request(SARIF));
+    KkQualityIngestionService.AnalysisStatusView view = ingest(request(SARIF));
 
     assertEquals("COMPLETE", view.status());
     assertEquals(1, view.issueCount());
@@ -130,7 +139,7 @@ class KkQualityIngestionServiceTest {
     when(dao.lockBranch(9L)).thenReturn(true);
     when(dao.findLatestAnalysis(5L, 9L)).thenReturn(Optional.of(analysis(11L, 1, 1)));
 
-    KkQualityIngestionService.AnalysisStatusView view = service.ingest(request(SARIF));
+    KkQualityIngestionService.AnalysisStatusView view = ingest(request(SARIF));
 
     assertEquals("analysis-11", view.analysisId());
     verify(dao, never()).insertAnalysis(any());
@@ -153,7 +162,7 @@ class KkQualityIngestionServiceTest {
     when(dao.countNewIssues(5L, 9L, 12L)).thenReturn(0L);
     when(dao.findAnalysis(12L)).thenReturn(Optional.of(analysis(12L, 1, 0)));
 
-    KkQualityIngestionService.AnalysisStatusView view = service.ingest(request(SARIF));
+    KkQualityIngestionService.AnalysisStatusView view = ingest(request(SARIF));
 
     assertEquals(0, view.newIssueCount());
     verify(dao, never()).insertIssue(
@@ -185,22 +194,53 @@ class KkQualityIngestionServiceTest {
   @Test
   void rejectsMissingProject() {
     ResponseStatusException error = assertThrows(ResponseStatusException.class,
-        () -> service.ingest(new KkQualityIngestionService.IngestRequest(
+        () -> ingest(new KkQualityIngestionService.IngestRequest(
             " ", null, "main", null, null, objectMapper.readTree(SARIF))));
     assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
   }
 
   @Test
+  void refusesToWriteIntoAProjectBoundToAnotherRepository() {
+    // The project already belongs to repository 3; a caller authorized for repository 4 must not be
+    // able to rebind it or write into it.
+    when(dao.findProjectByKey("orders")).thenReturn(Optional.of(
+        new Project(5L, "ext-5", "orders", "Orders", null, "private", 3L, CREATED, CREATED)));
+
+    ResponseStatusException error = assertThrows(ResponseStatusException.class,
+        () -> service.ingest(request(SARIF), 4L));
+
+    assertEquals(HttpStatus.FORBIDDEN, error.getStatusCode());
+    verify(dao, never()).bindRepository(anyLong(), anyLong(), any());
+    verify(dao, never()).insertAnalysis(any());
+  }
+
+  @Test
+  void bindsAnUnboundProjectToTheAuthorizedRepository() {
+    when(dao.findProjectByKey("orders")).thenReturn(Optional.of(
+        new Project(5L, "ext-5", "orders", "Orders", null, "private", null, CREATED, CREATED)));
+    when(dao.findProject(5L)).thenReturn(Optional.of(
+        new Project(5L, "ext-5", "orders", "Orders", null, "private", 4L, CREATED, CREATED)));
+    when(dao.findBranch(5L, "main"))
+        .thenReturn(Optional.of(new Branch(9L, 5L, "main", true, CREATED)));
+    when(dao.lockBranch(9L)).thenReturn(true);
+    when(dao.findLatestAnalysis(5L, 9L)).thenReturn(Optional.of(analysis(11L, 1, 1)));
+
+    ingestWithRepository(request(SARIF), 4L);
+
+    verify(dao).bindRepository(eq(5L), eq(4L), any());
+  }
+
+  @Test
   void rejectsDocumentsWithoutRuns() {
     ResponseStatusException error = assertThrows(ResponseStatusException.class,
-        () -> service.ingest(request("{\"version\":\"2.1.0\"}")));
+        () -> ingest(request("{\"version\":\"2.1.0\"}")));
     assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
   }
 
   @Test
   void rejectsUnsupportedSarifVersions() {
     ResponseStatusException error = assertThrows(ResponseStatusException.class,
-        () -> service.ingest(request("{\"version\":\"1.0\",\"runs\":[]}")));
+        () -> ingest(request("{\"version\":\"1.0\",\"runs\":[]}")));
     assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
   }
 
@@ -209,7 +249,7 @@ class KkQualityIngestionServiceTest {
     properties.setMaxSarifBytes(1024);
     String padded = SARIF.replace("2.1.0", "2.1.0" + " ".repeat(2048));
     ResponseStatusException error = assertThrows(ResponseStatusException.class,
-        () -> service.ingest(request(padded)));
+        () -> ingest(request(padded)));
     assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, error.getStatusCode());
   }
 
@@ -217,7 +257,7 @@ class KkQualityIngestionServiceTest {
   void rejectsTooManyIssues() {
     properties.setMaxIssues(1);
     ResponseStatusException error = assertThrows(ResponseStatusException.class,
-        () -> service.ingest(request(SARIF_TWO_ISSUES)));
+        () -> ingest(request(SARIF_TWO_ISSUES)));
     assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, error.getStatusCode());
   }
 

@@ -64,6 +64,17 @@ decision always goes through the shared, durable `SecurityManagementService` gra
 replica-local cache. Projects without a repository binding are only visible through the
 application-wide privilege.
 
+Several projects may share one repository: the binding is a tenancy scope (one repository can host
+several modules, each with its own Sonar project), not a 1:1 mapping. What is fixed is the binding
+itself: a project is bound once, and ingestion may not move it.
+
+Ingestion resolves the project **before** authorizing. A request naming repository B for a project
+already bound to repository A is refused (`403`) instead of being authorized against B and then
+writing into A; when the payload omits the repository, the existing binding decides. An unbound
+project is bound to the repository named by the caller, and a caller with no repository and no
+binding must hold `nx-kkquality-update`. The ingestion service re-checks the binding inside the
+transaction, so a concurrent binding by another replica cannot be overwritten.
+
 ## API compatibility
 
 Read compatibility with the SonarQube Web API subset used by dashboards and CI:

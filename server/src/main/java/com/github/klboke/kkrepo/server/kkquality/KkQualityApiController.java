@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -57,17 +58,36 @@ public class KkQualityApiController {
     if (request == null) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "An analysis payload is required");
     }
-    Long repositoryId = authorizer.findRepository(request.repository())
-        .map(repository -> repository.id())
-        .orElse(null);
-    if (repositoryId == null) {
-      // A project is bound once: honor an existing binding even when the caller omits it.
-      repositoryId = dao.findProjectByKey(request.project())
-          .map(Project::repositoryId)
-          .orElse(null);
+    if (request.project() == null || request.project().isBlank()) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "project is required");
     }
-    authorizer.requireIngest(subject, repositoryId);
-    return ResponseEntity.ok(ingestion.ingest(request));
+    // The project binding, not the caller-supplied repository, decides the tenant: authorizing on
+    // the name in the payload would let an editor of repository B write into a project bound to A.
+    Long namedRepositoryId = resolveRepositoryId(request.repository());
+    Optional<Project> existing = dao.findProjectByKey(request.project().trim());
+    Long boundRepositoryId = existing.map(Project::repositoryId).orElse(null);
+    if (boundRepositoryId != null && namedRepositoryId != null
+        && !boundRepositoryId.equals(namedRepositoryId)) {
+      throw new ResponseStatusException(
+          HttpStatus.FORBIDDEN,
+          "Project " + request.project().trim() + " is bound to another repository");
+    }
+    Long targetRepositoryId = boundRepositoryId != null ? boundRepositoryId : namedRepositoryId;
+    authorizer.requireIngest(subject, targetRepositoryId);
+    // The resolved id is authoritative inside the ingestion transaction too; the service refuses a
+    // provider-supplied binding that contradicts an existing one.
+    return ResponseEntity.ok(ingestion.ingest(request, targetRepositoryId));
+  }
+
+  /** Resolves the optional repository name; unknown names are a client error, not "no binding". */
+  private Long resolveRepositoryId(String repository) {
+    if (repository == null || repository.isBlank()) {
+      return null;
+    }
+    return authorizer.findRepository(repository)
+        .map(repositoryRecord -> repositoryRecord.id())
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "Unknown repository " + repository.trim()));
   }
 
   @GetMapping("/analyses/{analysisId}")

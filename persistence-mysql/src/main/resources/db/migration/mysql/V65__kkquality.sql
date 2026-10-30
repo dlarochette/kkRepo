@@ -19,7 +19,9 @@ CREATE TABLE kkq_project (
   PRIMARY KEY (id),
   UNIQUE KEY uk_kkq_project_external_id (external_id),
   UNIQUE KEY uk_kkq_project_key (project_key),
-  UNIQUE KEY uk_kkq_project_repository (repository_id),
+  -- Several projects may share one repository (one repo can host several modules); the binding is
+  -- a tenancy scope, not a 1:1 mapping.
+  INDEX idx_kkq_project_repository (repository_id),
   CONSTRAINT fk_kkq_project_repository
     FOREIGN KEY (repository_id) REFERENCES repository(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

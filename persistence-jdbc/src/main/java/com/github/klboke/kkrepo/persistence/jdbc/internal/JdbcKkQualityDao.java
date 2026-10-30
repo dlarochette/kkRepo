@@ -499,9 +499,10 @@ public class JdbcKkQualityDao implements KkQualityDao {
   }
 
   @Override
-  public List<Rule> listRules(String engine, String query, int limit, int offset) {
+  public List<Rule> listRules(
+      String engine, String query, List<String> languages, int limit, int offset) {
     List<Object> args = new ArrayList<>();
-    String where = ruleFilter(engine, query, args);
+    String where = ruleFilter(engine, query, languages, args);
     args.add(boundLimit(limit));
     args.add(boundOffset(offset));
     return jdbc.query("SELECT * FROM kkq_rule " + where
@@ -509,9 +510,10 @@ public class JdbcKkQualityDao implements KkQualityDao {
   }
 
   @Override
-  public long countRules(String engine, String query) {
+  public long countRules(String engine, String query, List<String> languages) {
     List<Object> args = new ArrayList<>();
-    return count("SELECT COUNT(*) FROM kkq_rule " + ruleFilter(engine, query, args), args);
+    return count(
+        "SELECT COUNT(*) FROM kkq_rule " + ruleFilter(engine, query, languages, args), args);
   }
 
   @Override
@@ -690,7 +692,8 @@ public class JdbcKkQualityDao implements KkQualityDao {
     args.addAll(values);
   }
 
-  private static String ruleFilter(String engine, String query, List<Object> args) {
+  private static String ruleFilter(
+      String engine, String query, List<String> languages, List<Object> args) {
     StringBuilder where = new StringBuilder("WHERE 1 = 1");
     if (notBlank(engine)) {
       where.append(" AND engine = ?");
@@ -702,6 +705,9 @@ public class JdbcKkQualityDao implements KkQualityDao {
       args.add(pattern);
       args.add(pattern);
     }
+    // The language filter belongs in SQL so pagination and `total` describe the filtered set
+    // instead of the unfiltered one.
+    appendIn(where, "language", languages, args);
     return where.toString();
   }
 

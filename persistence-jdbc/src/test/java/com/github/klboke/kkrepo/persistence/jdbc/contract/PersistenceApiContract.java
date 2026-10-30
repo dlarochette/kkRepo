@@ -6765,10 +6765,16 @@ public abstract class PersistenceApiContract {
     assertNotNull(marked.closedAt());
 
     // Rules are global reference data and must be idempotent.
-    dao.upsertRule("semgrep", "rule-1", "Rule", "MAJOR", "java", "desc", "fix", now);
-    dao.upsertRule("semgrep", "rule-1", "Rule renamed", "MAJOR", "java", "desc2", "fix2", now);
-    assertEquals(1, dao.countRules("semgrep", "rule-1"));
-    assertEquals("Rule renamed", dao.findRule("semgrep", "rule-1").orElseThrow().name());
+    String engine = "semgrep-" + suffix;
+    dao.upsertRule(engine, "rule-1", "Rule", "MAJOR", "java", "desc", "fix", now);
+    dao.upsertRule(engine, "rule-1", "Rule renamed", "MAJOR", "java", "desc2", "fix2", now);
+    dao.upsertRule(engine, "rule-2", "Python rule", "MINOR", "python", null, null, now);
+    assertEquals(1, dao.countRules(engine, "rule-1", List.of()));
+    assertEquals("Rule renamed", dao.findRule(engine, "rule-1").orElseThrow().name());
+    // The language filter runs in SQL, so count and page agree with each other.
+    assertEquals(2, dao.countRules(engine, null, List.of()));
+    assertEquals(1, dao.countRules(engine, null, List.of("python")));
+    assertEquals(1, dao.listRules(engine, null, List.of("python"), 10, 0).size());
 
     dao.replaceMeasures(analysis4, List.of(
         new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Measure(

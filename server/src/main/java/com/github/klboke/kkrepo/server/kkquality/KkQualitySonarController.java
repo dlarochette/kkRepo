@@ -239,16 +239,12 @@ public class KkQualitySonarController {
     authorizer.requireSubject(request);
     int size = pageSize(pageSize, pageSizeAlias);
     int index = page(page, pageAlias);
-    List<Rule> rules = dao.listRules(null, query, size, (index - 1) * size);
-    long total = dao.countRules(null, query);
     List<String> wanted = split(languages);
+    List<Rule> rules = dao.listRules(null, query, wanted, size, (index - 1) * size);
+    long total = dao.countRules(null, query, wanted);
 
     List<Map<String, Object>> result = new ArrayList<>();
     for (Rule rule : rules) {
-      if (!wanted.isEmpty()
-          && (rule.language() == null || !wanted.contains(rule.language()))) {
-        continue;
-      }
       Map<String, Object> node = new LinkedHashMap<>();
       node.put("key", rule.engine() + ":" + rule.ruleKey());
       node.put("repo", rule.engine());
