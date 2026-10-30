@@ -461,13 +461,9 @@ Current limitations:
 
 - Group membership changes are staged explicitly and applied at promotion; cycles, self-membership
   and cross-format members are rejected during preflight.
-- Except for Maven, npm, PyPI, Helm, Docker tags, Cargo sparse indexes, Go `@v/list`, Pub package
-  metadata, Yum repodata, R `PACKAGES.gz`, the RubyGems compact index, Composer `p2` metadata and
-  the NuGet registration/version indexes, the Ansible Galaxy version list/detail, the Swift release
-  list/metadata, Terraform provider metadata and Conda repodata, generated indexes are rebuilt from
-  live content only. Staged packages are visible individually and are published correctly at
-  promotion, but a client that resolves them through an index (APT) will not see them until that
-  format's staging-aware index generation lands.
+- Every hosted format handled by this branch exposes a staging-aware index, so clients resolve
+  staged content before promotion. Arch `.db`/`.files` and Open VSX extension metadata are
+  delivered in the stacked format PRs.
 - Swift staging serves the package's default `Package.swift`; alternate tools-version manifests
   (`Package@swift-X.swift`) and their `Link` alternates are advertised after promotion.
 - An expired session is cancelled by the sweeper and its staged blob references are released; the
