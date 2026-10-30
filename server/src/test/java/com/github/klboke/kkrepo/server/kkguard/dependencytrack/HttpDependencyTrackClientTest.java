@@ -174,6 +174,17 @@ class HttpDependencyTrackClientTest {
   }
 
   @Test
+  void unknownBomTokensAreAnErrorInsteadOfAnEmptyAnalysis() {
+    stub.respond("GET", "/api/v1/bom/token/unknown-token", 404, "");
+
+    DependencyTrackException error = assertThrows(DependencyTrackException.class,
+        () -> client.isProcessing("unknown-token"));
+
+    // Returning false here used to complete the scan with zero findings: a silent false negative.
+    assertTrue(error.getMessage().contains("analysis state is unknown"));
+  }
+
+  @Test
   void disablingTlsVerificationStaysScopedToTheKkGuardClient() {
     String switchName = "jdk.internal.httpclient.disableHostnameVerification";
     String previous = System.getProperty(switchName);

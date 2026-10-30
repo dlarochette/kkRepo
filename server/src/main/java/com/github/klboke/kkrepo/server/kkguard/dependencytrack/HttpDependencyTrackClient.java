@@ -119,7 +119,10 @@ public final class HttpDependencyTrackClient implements DependencyTrackClient {
   public boolean isProcessing(String token) {
     Response response = send("GET", "/api/v1/bom/token/" + encode(token), null);
     if (response.status() == 404) {
-      return false;
+      // An unknown token means the analysis state cannot be read. Treating it as "finished" would
+      // complete the scan with zero findings, i.e. a silent false negative.
+      throw new DependencyTrackException(
+          "Dependency-Track does not know BOM token " + token + "; analysis state is unknown");
     }
     requireSuccess("read BOM processing state", response);
     return parse("read BOM processing state", response.body()).path("processing").asBoolean(false);
