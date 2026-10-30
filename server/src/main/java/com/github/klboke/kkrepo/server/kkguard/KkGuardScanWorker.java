@@ -6,6 +6,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Application;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Finding;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Scan;
+import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.ScanComponent;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Violation;
 import com.github.klboke.kkrepo.server.blob.BlobReferenceCodec;
 import com.github.klboke.kkrepo.server.kkguard.dependencytrack.DependencyTrackClient;
@@ -26,6 +27,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Drives kkGuard scans on every replica.
@@ -48,16 +51,19 @@ public class KkGuardScanWorker {
   private final DependencyTrackClient dependencyTrack;
   private final KkGuardScanService scans;
   private final BlobStorageRegistry storages;
+  private final TransactionTemplate transactions;
   private final String owner = "kkg-" + UUID.randomUUID();
 
   public KkGuardScanWorker(
       KkGuardDao dao, KkGuardProperties properties, DependencyTrackClient dependencyTrack,
-      KkGuardScanService scans, BlobStorageRegistry storages) {
+      KkGuardScanService scans, BlobStorageRegistry storages,
+      PlatformTransactionManager transactionManager) {
     this.dao = dao;
     this.properties = properties;
     this.dependencyTrack = dependencyTrack;
     this.scans = scans;
     this.storages = storages;
+    this.transactions = new TransactionTemplate(transactionManager);
   }
 
   @Scheduled(fixedDelayString = "${kkrepo.kkg.worker.idle-delay-ms:5000}")
@@ -146,10 +152,22 @@ public class KkGuardScanWorker {
             finding.cvssScore(), finding.source(), finding.description(), finding.url()))
         .toList();
     List<Violation> violations = scans.evaluatePolicies(scan.applicationId(), scan.id(), findings);
-    dao.replaceScanComponents(scan.id(), KkGuardScanService.componentsOf(scan.id(), findings));
-    dao.replaceScanFindings(scan.id(), findings);
-    dao.replaceViolations(scan.id(), violations);
-    finish(scan, "COMPLETE", null, findings.size(), violations.size());
+    List<ScanComponent> components = KkGuardScanService.componentsOf(scan.id(), findings);
+    // One transaction for the whole snapshot and the terminal transition: every write is fenced by
+    // the lease owner, and a replica whose lease expired half-way rolls back instead of leaving a
+    // partial snapshot behind the replica that took over.
+    transactions.executeWithoutResult(status -> {
+      if (!dao.replaceScanComponents(scan.id(), owner, components)
+          || !dao.replaceScanFindings(scan.id(), owner, findings)
+          || !dao.replaceViolations(scan.id(), owner, violations)) {
+        throw new DependencyTrackException(
+            "Scan " + scan.id() + " is no longer leased to this replica; snapshot discarded");
+      }
+      if (!finish(scan, "COMPLETE", null, findings.size(), violations.size())) {
+        throw new DependencyTrackException(
+            "Scan " + scan.id() + " lost its lease before completion");
+      }
+    });
   }
 
   private Project ensureProject(Application application, String sourceId, Instant now) {
@@ -202,8 +220,9 @@ public class KkGuardScanWorker {
     dao.findScan(scanId).ifPresent(scan -> finish(scan, "FAILED", sanitize(error), 0, 0));
   }
 
-  private void finish(Scan scan, String status, String error, int components, int violations) {
-    dao.finishScan(scan.id(), owner, status, error, components, violations, Instant.now());
+  /** Returns {@code false} when the lease was lost, i.e. the transition was a no-op. */
+  private boolean finish(Scan scan, String status, String error, int components, int violations) {
+    return dao.finishScan(scan.id(), owner, status, error, components, violations, Instant.now());
   }
 
   private static String sanitize(Exception error) {

@@ -6681,26 +6681,28 @@ public abstract class PersistenceApiContract {
     assertNotNull(dao.findApplication(applicationId).orElseThrow().dtProjectUuid());
     String scanKey = "scan-" + suffix;
     long scanId = dao.insertScan(new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Scan(
-        0L, applicationId, scanKey, "COMPLETE", "build", "cli", "a".repeat(64),
+        0L, applicationId, scanKey, "PENDING", "build", "cli", "a".repeat(64),
         "b".repeat(64), 1, 1, null, null, null, 0, null, null, null, null, now, now, now));
-    assertEquals("COMPLETE", dao.findScanByScanId(scanKey).orElseThrow().status());
-    dao.replaceScanComponents(scanId, List.of(
+    assertEquals("PENDING", dao.findScanByScanId(scanKey).orElseThrow().status());
+    // Snapshot writes only happen while the replica holds the lease.
+    assertTrue(dao.claimScan(scanId, "replica-a", now, now.plusSeconds(60)));
+    assertTrue(dao.replaceScanComponents(scanId, "replica-a", List.of(
         new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.ScanComponent(
             scanId, "pkg:npm/demo@1.0.0", "pkg:npm/demo@1.0.0", "demo", "1.0.0",
-            "MIT", "high")));
-    dao.replaceScanFindings(scanId, List.of(
+            "MIT", "high"))));
+    assertTrue(dao.replaceScanFindings(scanId, "replica-a", List.of(
         new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Finding(
             scanId, "pkg:npm/demo@1.0.0", "CVE-2026-0001", "high",
             new java.math.BigDecimal("8.1"), "dependency-track", "demo finding",
-            "https://example.test")));
+            "https://example.test"))));
     assertEquals(1, dao.listScanComponents(scanId).size());
     assertEquals(1, dao.listScanFindings(scanId).size());
     long policyId = dao.insertPolicy(
         organizationId, java.util.UUID.randomUUID().toString(), "policy-" + suffix,
         "Policy", 8, Map.of("severity", "high"), now);
-    dao.replaceViolations(scanId, List.of(
+    assertTrue(dao.replaceViolations(scanId, "replica-a", List.of(
         new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Violation(
-            scanId, policyId, "pkg:npm/demo@1.0.0", 8, Map.of("severity", "high"))));
+            scanId, policyId, "pkg:npm/demo@1.0.0", 8, Map.of("severity", "high")))));
     assertEquals(1, dao.listViolations(scanId).size());
     assertTrue(dao.deleteApplication(applicationId));
     assertTrue(dao.findScan(scanId).isEmpty());
@@ -6737,9 +6739,38 @@ public abstract class PersistenceApiContract {
     assertFalse(dao.markScanPolled(scanId, "replica-a", 1, now));
     assertTrue(dao.markScanPolled(scanId, "replica-b", 1, now));
     assertEquals(1, dao.findScan(scanId).orElseThrow().attempts());
+
+    // Snapshot writes are fenced by the same lease as the state transitions: the replica that lost
+    // the lease cannot overwrite the findings of the replica that took over.
+    assertFalse(dao.replaceScanComponents(scanId, "replica-a", List.of(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.ScanComponent(
+            scanId, "pkg:npm/stale@0.1.0", "pkg:npm/stale@0.1.0", "stale", "0.1.0",
+            null, "critical"))));
+    assertEquals(0, dao.listScanComponents(scanId).size());
+    assertTrue(dao.replaceScanComponents(scanId, "replica-b", List.of(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.ScanComponent(
+            scanId, "pkg:npm/demo@1.0.0", "pkg:npm/demo@1.0.0", "demo", "1.0.0",
+            "MIT", "high"))));
+    assertEquals(1, dao.listScanComponents(scanId).size());
+    assertFalse(dao.replaceScanFindings(scanId, "replica-a", List.of(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Finding(
+            scanId, "pkg:npm/stale@0.1.0", "CVE-2026-9999", "critical",
+            new java.math.BigDecimal("9.9"), "dependency-track", "stale finding", null))));
+    assertEquals(0, dao.listScanFindings(scanId).size());
+    assertTrue(dao.replaceScanFindings(scanId, "replica-b", List.of(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao.Finding(
+            scanId, "pkg:npm/demo@1.0.0", "CVE-2026-0001", "high",
+            new java.math.BigDecimal("8.1"), "dependency-track", "demo finding", null))));
+    assertEquals(1, dao.listScanFindings(scanId).size());
+    assertFalse(dao.replaceViolations(scanId, "replica-a", List.of()));
+
     assertFalse(dao.finishScan(scanId, "replica-a", "COMPLETE", null, 1, 0, now));
     assertTrue(dao.finishScan(scanId, "replica-b", "COMPLETE", null, 1, 0, now));
     assertEquals("COMPLETE", dao.findScan(scanId).orElseThrow().status());
+    // The terminal transition released the lease, so a late write cannot replace the snapshot of a
+    // finished scan.
+    assertFalse(dao.replaceScanComponents(scanId, "replica-b", List.of()));
+    assertEquals(1, dao.listScanComponents(scanId).size());
 
     assertEquals(scanId,
         dao.findCompletedScanBySbom(applicationId, "cli", sbomSha).orElseThrow().id());

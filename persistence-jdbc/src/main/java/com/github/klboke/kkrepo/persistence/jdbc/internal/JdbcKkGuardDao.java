@@ -359,23 +359,10 @@ public class JdbcKkGuardDao implements KkGuardDao {
   }
 
   @Override
-  public boolean updateScan(
-      long id, String status, String stage, String error, int componentCount,
-      int violationCount, String sbomSha256, String reportSha256,
-      Instant startedAt, Instant completedAt) {
-    return jdbc.update("""
-        UPDATE kkg_scan SET status = ?, stage = ?, error = ?, component_count = ?,
-          violation_count = ?, sbom_sha256 = COALESCE(?, sbom_sha256),
-          report_sha256 = COALESCE(?, report_sha256), started_at = COALESCE(?, started_at),
-          completed_at = COALESCE(?, completed_at)
-        WHERE id = ?
-        """, status, stage, error, componentCount, violationCount, sbomSha256, reportSha256,
-        startedAt == null ? null : Timestamp.from(startedAt),
-        completedAt == null ? null : Timestamp.from(completedAt), id) > 0;
-  }
-
-  @Override
-  public void replaceScanComponents(long scanId, List<ScanComponent> components) {
+  public boolean replaceScanComponents(long scanId, String owner, List<ScanComponent> components) {
+    if (!lockOwnedScan(scanId, owner)) {
+      return false;
+    }
     jdbc.update("DELETE FROM kkg_scan_component WHERE scan_id = ?", scanId);
     for (ScanComponent component : components) {
       jdbc.update("""
@@ -385,10 +372,14 @@ public class JdbcKkGuardDao implements KkGuardDao {
           """, scanId, component.ref(), component.purl(), component.name(), component.version(),
           component.license(), component.highestSeverity());
     }
+    return true;
   }
 
   @Override
-  public void replaceScanFindings(long scanId, List<Finding> findings) {
+  public boolean replaceScanFindings(long scanId, String owner, List<Finding> findings) {
+    if (!lockOwnedScan(scanId, owner)) {
+      return false;
+    }
     jdbc.update("DELETE FROM kkg_scan_finding WHERE scan_id = ?", scanId);
     for (Finding finding : findings) {
       jdbc.update("""
@@ -398,6 +389,18 @@ public class JdbcKkGuardDao implements KkGuardDao {
           """, scanId, finding.componentRef(), finding.vulnerabilityId(), finding.severity(),
           finding.cvssScore(), finding.source(), finding.description(), finding.url());
     }
+    return true;
+  }
+
+  /**
+   * Takes the row lock on the scan only while {@code owner} still holds the lease. Callers must run
+   * inside a transaction so the lock survives until the snapshot writes commit; a replica that lost
+   * its lease therefore cannot overwrite a snapshot produced by the new owner.
+   */
+  private boolean lockOwnedScan(long scanId, String owner) {
+    return !jdbc.queryForList(
+        "SELECT id FROM kkg_scan WHERE id = ? AND lease_owner = ? FOR UPDATE",
+        Long.class, scanId, owner).isEmpty();
   }
 
   @Override
@@ -471,7 +474,10 @@ public class JdbcKkGuardDao implements KkGuardDao {
   }
 
   @Override
-  public void replaceViolations(long scanId, List<Violation> violations) {
+  public boolean replaceViolations(long scanId, String owner, List<Violation> violations) {
+    if (!lockOwnedScan(scanId, owner)) {
+      return false;
+    }
     jdbc.update("DELETE FROM kkg_violation WHERE scan_id = ?", scanId);
     for (Violation violation : violations) {
       jdbc.update("""
@@ -481,6 +487,7 @@ public class JdbcKkGuardDao implements KkGuardDao {
           """, scanId, violation.policyId(), violation.componentRef(), violation.threatLevel(),
           json.serializedParameter(json.writeValue(violation.constraint())));
     }
+    return true;
   }
 
   @Override

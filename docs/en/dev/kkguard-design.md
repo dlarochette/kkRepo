@@ -113,8 +113,16 @@ is submitted or completed twice:
    lease owner, so a replica that lost its lease (crash, pause, GC) cannot overwrite a newer
    attempt. Leases expire after `kkrepo.kkg.worker.lease-duration`, which also recovers scans held
    by a replica that disappeared mid-pass.
-5. Submission and analysis are bounded by `poll-timeout`; an expired scan is failed with a
-   sanitized error and keeps its SBOM blob for diagnosis.
+5. The snapshot writes (`replaceScanComponents`, `replaceScanFindings`, `replaceViolations`) are
+   fenced the same way and run in one transaction with the `COMPLETE` transition. Each takes the
+   `kkg_scan` row lock with `SELECT ... FOR UPDATE` only while `lease_owner` matches, and a mismatch
+   aborts the transaction, so a slow poll whose lease expired cannot replace the findings of the
+   replica that took over: the status and the snapshot always come from the same owner.
+6. Submission and analysis are bounded by `poll-timeout`; an expired scan is failed with a
+   sanitized error and keeps its SBOM blob for diagnosis. A `404` from a findings/violations
+   endpoint is an error, never "zero findings": the project UUID came from Dependency-Track, so a
+   missing project means the snapshot is unknown and the scan must fail rather than report a clean
+   result.
 
 Policy evaluation is local and deterministic. Supported `kkg_policy.constraints_json` keys are
 `severity` (minimum), `cvssScore` (minimum), `vulnerabilityId` (exact) and `componentRef` (prefix);

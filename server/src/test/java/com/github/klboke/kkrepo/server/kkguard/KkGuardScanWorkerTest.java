@@ -35,6 +35,8 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 
 class KkGuardScanWorkerTest {
   private static final Instant NOW = Instant.parse("2026-01-01T00:10:00Z");
@@ -61,10 +63,13 @@ class KkGuardScanWorkerTest {
     properties.setEnabled(true);
     properties.getDependencyTrack().setUrl("http://dtrack.test");
     properties.getDependencyTrack().setApiKey("key");
-    worker = new KkGuardScanWorker(dao, properties, dependencyTrack, scans, storages);
     when(dao.listClaimableScanIds(any(), anyInt())).thenReturn(List.of(10L));
     when(dao.claimScan(eq(10L), anyString(), any(), any())).thenReturn(true);
     when(storages.forBlobStoreId(1L)).thenReturn(storage);
+    PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+    when(transactionManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
+    worker = new KkGuardScanWorker(
+        dao, properties, dependencyTrack, scans, storages, transactionManager);
   }
 
   @Test
@@ -127,14 +132,38 @@ class KkGuardScanWorkerTest {
     List<Violation> violations = List.of(new Violation(
         10L, 3L, "pkg:npm/lodash@4.17.20", 8, Map.of("severity", "HIGH")));
     when(scans.evaluatePolicies(eq(5L), eq(10L), any())).thenReturn(violations);
+    when(dao.replaceScanComponents(eq(10L), anyString(), any())).thenReturn(true);
+    when(dao.replaceScanFindings(eq(10L), anyString(), any())).thenReturn(true);
+    when(dao.replaceViolations(eq(10L), anyString(), any())).thenReturn(true);
+    when(dao.finishScan(eq(10L), anyString(), anyString(), any(), anyInt(), anyInt(), any()))
+        .thenReturn(true);
 
     worker.runOnce(NOW);
 
-    verify(dao).replaceScanFindings(10L, findings);
-    verify(dao).replaceViolations(10L, violations);
-    verify(dao).replaceScanComponents(eq(10L), any());
+    verify(dao).replaceScanFindings(10L, worker.owner(), findings);
+    verify(dao).replaceViolations(10L, worker.owner(), violations);
+    verify(dao).replaceScanComponents(eq(10L), eq(worker.owner()), any());
     verify(dao).finishScan(eq(10L), eq(worker.owner()), eq("COMPLETE"), eq(null), eq(1), eq(1),
         any());
+  }
+
+  @Test
+  void aReplicaThatLostItsLeaseWritesNoSnapshot() {
+    when(dao.findScan(10L)).thenReturn(Optional.of(
+        scan("SCANNING", "dt-uuid", "dt-token", NOW.minusSeconds(5))));
+    when(dependencyTrack.isConfigured()).thenReturn(true);
+    when(dependencyTrack.isProcessing("dt-token")).thenReturn(false);
+    when(dependencyTrack.listFindings("dt-uuid")).thenReturn(List.of());
+    when(scans.evaluatePolicies(eq(5L), eq(10L), any())).thenReturn(List.of());
+    // Another replica claimed the scan while this one was reading Dependency-Track.
+    when(dao.replaceScanComponents(eq(10L), anyString(), any())).thenReturn(false);
+
+    worker.runOnce(NOW);
+
+    verify(dao, never()).replaceScanFindings(anyLong(), anyString(), any());
+    verify(dao, never()).replaceViolations(anyLong(), anyString(), any());
+    verify(dao, never()).finishScan(
+        eq(10L), eq(worker.owner()), eq("COMPLETE"), any(), anyInt(), anyInt(), any());
   }
 
   @Test

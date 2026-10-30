@@ -103,14 +103,21 @@ class HttpDependencyTrackClientTest {
   }
 
   @Test
-  void missingProjectsAndMissingSnapshotsAreEmptyRatherThanErrors() {
+  void missingProjectsAreEmptyButMissingFindingsFail() {
     stub.respond("GET", "/api/v1/project/lookup", 404, "The project could not be found.");
     stub.respond("GET", "/api/v1/finding/project/absent", 404, "not found");
     stub.respond("GET", "/api/v1/violation/project/absent", 404, "not found");
 
     assertTrue(client.findProject("absent", "1.0").isEmpty());
-    assertTrue(client.listFindings("absent").isEmpty());
-    assertTrue(client.listViolations("absent").isEmpty());
+
+    // A 404 on a project UUID that came from Dependency-Track means the snapshot cannot be read.
+    // Returning an empty list would complete the scan at zero findings: a silent false negative.
+    var findingsError = assertThrows(
+        DependencyTrackException.class, () -> client.listFindings("absent"));
+    assertEquals(404, findingsError.statusCode());
+    var violationsError = assertThrows(
+        DependencyTrackException.class, () -> client.listViolations("absent"));
+    assertEquals(404, violationsError.statusCode());
   }
 
   @Test

@@ -124,13 +124,14 @@ public interface KkGuardDao {
       long id, String owner, String status, String error, int componentCount,
       int violationCount, Instant completedAt);
 
-  boolean updateScan(
-      long id, String status, String stage, String error, int componentCount, int violationCount,
-      String sbomSha256, String reportSha256, Instant startedAt, Instant completedAt);
+  /**
+   * Replaces the component snapshot of a scan still owned by {@code owner}. Returns {@code false}
+   * when the lease was lost, in which case nothing is written.
+   */
+  boolean replaceScanComponents(long scanId, String owner, List<ScanComponent> components);
 
-  void replaceScanComponents(long scanId, List<ScanComponent> components);
-
-  void replaceScanFindings(long scanId, List<Finding> findings);
+  /** Replaces the finding snapshot of a scan still owned by {@code owner}. */
+  boolean replaceScanFindings(long scanId, String owner, List<Finding> findings);
 
   List<ScanComponent> listScanComponents(long scanId);
 
@@ -152,7 +153,8 @@ public interface KkGuardDao {
 
   boolean deletePolicy(long id);
 
-  void replaceViolations(long scanId, List<Violation> violations);
+  /** Replaces the violation snapshot of a scan still owned by {@code owner}. */
+  boolean replaceViolations(long scanId, String owner, List<Violation> violations);
 
   List<Violation> listViolations(long scanId);
 }

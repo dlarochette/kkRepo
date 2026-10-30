@@ -132,7 +132,11 @@ public final class HttpDependencyTrackClient implements DependencyTrackClient {
   public List<Finding> listFindings(String projectUuid) {
     Response response = send("GET", "/api/v1/finding/project/" + encode(projectUuid), null);
     if (response.status() == 404) {
-      return List.of();
+      // The project UUID came from Dependency-Track itself, so a 404 means the project is gone or
+      // the API is misrouted. Reporting "no findings" would complete the scan at zero findings, a
+      // silent false negative, so this fails the scan instead.
+      throw new DependencyTrackException(
+          "Dependency-Track does not know project " + projectUuid + "; findings are unknown", 404);
     }
     requireSuccess("list findings", response);
     JsonNode root = parse("list findings", response.body());
@@ -154,7 +158,9 @@ public final class HttpDependencyTrackClient implements DependencyTrackClient {
     Response response =
         send("GET", "/api/v1/violation/project/" + encode(projectUuid), null);
     if (response.status() == 404) {
-      return List.of();
+      // Same reasoning as listFindings: an unknown project is not "zero violations".
+      throw new DependencyTrackException(
+          "Dependency-Track does not know project " + projectUuid + "; violations are unknown", 404);
     }
     requireSuccess("list violations", response);
     JsonNode root = parse("list violations", response.body());
