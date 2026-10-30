@@ -30,12 +30,14 @@ class KkGuardApiControllerTest {
   private static final String APP = "22222222-2222-2222-2222-222222222222";
 
   private KkGuardCatalogService catalog;
+  private KkGuardScanService scans;
   private MockMvc mvc;
 
   @BeforeEach
   void setUp() {
     catalog = mock(KkGuardCatalogService.class);
-    mvc = MockMvcBuilders.standaloneSetup(new KkGuardApiController(catalog)).build();
+    scans = mock(KkGuardScanService.class);
+    mvc = MockMvcBuilders.standaloneSetup(new KkGuardApiController(catalog, scans)).build();
   }
 
   @Test
@@ -133,5 +135,34 @@ class KkGuardApiControllerTest {
     assertEquals(400, mvc.perform(post("/api/v2/applications")
             .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"Orders\"}"))
         .andReturn().getResponse().getStatus());
+  }
+
+  @Test
+  void scanSubmissionStatusAndReportsExposeThePipelineState() throws Exception {
+    var status = new KkGuardScanService.ScanStatusView(
+        "scan-1", APP, "orders-api", "build", "SCANNING", "build", 0, 0, null,
+        java.time.Instant.parse("2026-01-01T00:00:00Z"), null, null);
+    when(scans.submit(eq(APP), eq("build"), any(), any())).thenReturn(status);
+    when(scans.status(APP, "build")).thenReturn(status);
+    when(scans.report(APP, "scan-1")).thenReturn(new KkGuardScanService.ReportView(
+        status, List.of(), List.of(), List.of()));
+
+    var submitted = mvc.perform(post("/api/v2/scan/applications/" + APP + "/sources/build")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.5\",\"components\":[]}"))
+        .andReturn().getResponse();
+    assertEquals(200, submitted.getStatus());
+    assertTrue(submitted.getContentAsString().contains("\"scanId\":\"scan-1\""));
+    verify(scans).submit(eq(APP), eq("build"), eq("application/json"), any());
+
+    var polled = mvc.perform(get("/api/v2/scan/applications/" + APP + "/sources/build/status"))
+        .andReturn().getResponse();
+    assertEquals(200, polled.getStatus());
+    assertTrue(polled.getContentAsString().contains("\"status\":\"SCANNING\""));
+
+    var reported = mvc.perform(get("/api/v2/applications/" + APP + "/reports/scan-1"))
+        .andReturn().getResponse();
+    assertEquals(200, reported.getStatus());
+    assertTrue(reported.getContentAsString().contains("\"components\":[]"));
   }
 }

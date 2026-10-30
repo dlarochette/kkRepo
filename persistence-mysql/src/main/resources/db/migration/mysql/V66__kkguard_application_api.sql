@@ -27,7 +27,10 @@ ALTER TABLE kkg_scan
   ADD COLUMN lease_owner VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
   ADD COLUMN lease_expires_at DATETIME(3) NULL,
   ADD COLUMN submitted_at DATETIME(3) NULL,
-  ADD COLUMN last_polled_at DATETIME(3) NULL;
+  ADD COLUMN last_polled_at DATETIME(3) NULL,
+  ADD COLUMN sbom_blob_store_id BIGINT UNSIGNED NULL,
+  ADD COLUMN sbom_blob_ref VARCHAR(1024) NULL,
+  ADD COLUMN sbom_size BIGINT NULL;
 
 CREATE INDEX idx_kkg_scan_submitted ON kkg_scan(status, submitted_at);
 CREATE INDEX idx_kkg_scan_lease ON kkg_scan(status, lease_expires_at);

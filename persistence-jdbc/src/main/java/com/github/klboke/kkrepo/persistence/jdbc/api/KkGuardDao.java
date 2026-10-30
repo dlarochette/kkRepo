@@ -19,6 +19,9 @@ public interface KkGuardDao {
 
   record ApplicationTag(long applicationId, String name, String description) {}
 
+  /** Immutable SBOM location for a scan; the blob is addressed by digest inside one store. */
+  record ScanSbom(long blobStoreId, String blobRef, String sha256, long size) {}
+
   record Scan(
       long id, long applicationId, String scanId, String status, String stage, String sourceId,
       String sbomSha256, String reportSha256, int componentCount, int violationCount,
@@ -93,6 +96,13 @@ public interface KkGuardDao {
 
   /** Latest completed scan for the same SBOM and source, used to deduplicate submissions. */
   Optional<Scan> findCompletedScanBySbom(long applicationId, String sourceId, String sbomSha256);
+
+  /** Most recent scan of an application source, used by the status endpoint. */
+  Optional<Scan> findLatestScanByApplicationAndSource(long applicationId, String sourceId);
+
+  boolean attachScanSbom(long scanId, long blobStoreId, String blobRef, String sha256, long size);
+
+  Optional<ScanSbom> findScanSbom(long scanId);
 
   /** Scan ids eligible for a worker pass: due submission or an expired/absent lease. */
   List<Long> listClaimableScanIds(Instant now, int limit);

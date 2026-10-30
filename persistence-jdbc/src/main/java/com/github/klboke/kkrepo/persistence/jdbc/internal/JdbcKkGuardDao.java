@@ -269,6 +269,36 @@ public class JdbcKkGuardDao implements KkGuardDao {
   }
 
   @Override
+  public Optional<Scan> findLatestScanByApplicationAndSource(
+      long applicationId, String sourceId) {
+    return jdbc.query("""
+        SELECT * FROM kkg_scan
+        WHERE application_id = ? AND COALESCE(source_id, '') = COALESCE(?, '')
+        ORDER BY id DESC LIMIT 1
+        """, scans, applicationId, sourceId).stream().findFirst();
+  }
+
+  @Override
+  public boolean attachScanSbom(
+      long scanId, long blobStoreId, String blobRef, String sha256, long size) {
+    return jdbc.update("""
+        UPDATE kkg_scan SET sbom_blob_store_id = ?, sbom_blob_ref = ?, sbom_sha256 = ?,
+          sbom_size = ?
+        WHERE id = ?
+        """, blobStoreId, blobRef, sha256, size, scanId) > 0;
+  }
+
+  @Override
+  public Optional<ScanSbom> findScanSbom(long scanId) {
+    return jdbc.query("""
+        SELECT sbom_blob_store_id, sbom_blob_ref, sbom_sha256, sbom_size FROM kkg_scan
+        WHERE id = ? AND sbom_blob_ref IS NOT NULL
+        """, (rs, n) -> new ScanSbom(
+        rs.getLong("sbom_blob_store_id"), rs.getString("sbom_blob_ref"),
+        rs.getString("sbom_sha256"), rs.getLong("sbom_size")), scanId).stream().findFirst();
+  }
+
+  @Override
   public List<Long> listClaimableScanIds(Instant now, int limit) {
     return jdbc.queryForList("""
         SELECT id FROM kkg_scan

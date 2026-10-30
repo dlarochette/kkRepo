@@ -88,6 +88,32 @@ Failure handling:
 - Deleting an application deletes its kkGuard scans; the Dependency-Track project is left intact
   unless `kkrepo.kkg.dependency-track.delete-projects` is enabled.
 
+## Multi-replica scan ownership
+
+Every scan transition is fenced by a database lease, so any replica may run the worker and no scan
+is submitted or completed twice:
+
+1. A replica claims a scan with a conditional update
+   (`status IN ('PENDING','SCANNING') AND (lease_owner IS NULL OR lease_expires_at < now)`).
+   The update only succeeds for one replica; a claim that loses the race is skipped.
+2. `PENDING` scans are submitted: the SBOM blob is read back from object storage, its SHA-256 is
+   re-verified, the application's Dependency-Track project is looked up or created when
+   `auto-create-projects` is enabled, and `markScanSubmitted` stores the processing token.
+3. `SCANNING` scans are polled; `isProcessing` false triggers normalization into
+   `kkg_scan_component`/`kkg_scan_finding`, local policy evaluation into `kkg_violation` and a
+   fenced `COMPLETE` transition with component and violation counts.
+4. `markScanSubmitted`, `markScanPolled`, `finishScan` and `releaseScan` are all conditioned on the
+   lease owner, so a replica that lost its lease (crash, pause, GC) cannot overwrite a newer
+   attempt. Leases expire after `kkrepo.kkg.worker.lease-duration`, which also recovers scans held
+   by a replica that disappeared mid-pass.
+5. Submission and analysis are bounded by `poll-timeout`; an expired scan is failed with a
+   sanitized error and keeps its SBOM blob for diagnosis.
+
+Policy evaluation is local and deterministic. Supported `kkg_policy.constraints_json` keys are
+`severity` (minimum), `cvssScore` (minimum), `vulnerabilityId` (exact) and `componentRef` (prefix);
+all present constraints must match. A policy with no recognized constraint, or with an
+unparseable severity, never produces a violation so a malformed policy cannot fail every build.
+
 ## Nexus IQ-compatible API surface
 
 The compatibility target is the Nexus IQ `/api/v2` surface. kkGuard does not use the IQ name in
@@ -95,12 +121,12 @@ its own identifiers.
 
 | Area | Endpoints (kkGuard) | State |
 | --- | --- | --- |
-| Organizations | `GET/POST /api/v2/organizations`, `GET/DELETE /api/v2/organizations/{id}` | foundation |
-| Applications | `GET/POST /api/v2/applications`, `GET/PUT/DELETE /api/v2/applications/{id}`, `GET /api/v2/applications/organization/{orgId}` | foundation |
-| Scans | `POST /api/v2/scan/applications/{appId}/sources/{sourceId}`, `GET .../status` | next |
-| Reports | `GET /api/v2/applications/{appPublicId}/reports/{scanId}`, `.../raw`, `.../policy` | next |
+| Organizations | `GET/POST /api/v2/organizations`, `GET/DELETE /api/v2/organizations/{id}` | implemented |
+| Applications | `GET/POST /api/v2/applications`, `GET/PUT/DELETE /api/v2/applications/{id}`, `GET /api/v2/applications/organization/{orgId}` | implemented |
+| Scans | `POST /api/v2/scan/applications/{appId}/sources/{sourceId}`, `GET .../status` | implemented |
+| Reports | `GET /api/v2/applications/{appPublicId}/reports/{scanId}` | minimal report |
 | Component details | `POST /api/v2/components/details` | next |
-| Policies / violations | `GET /api/v2/policies`, `GET /api/v2/policyViolations` | next |
+| Policies / violations | `GET /api/v2/policies`, `GET /api/v2/policyViolations` | local evaluation implemented, read API next |
 | Waivers | `policyWaivers`/`policyWaiverRequests` | later |
 
 Response DTOs follow the Nexus IQ JSON models: organizations expose `id` (UUID) and `name`;

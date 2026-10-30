@@ -1,6 +1,8 @@
 package com.github.klboke.kkrepo.server.kkguard;
 
 import java.util.List;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -8,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -23,9 +26,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v2")
 public class KkGuardApiController {
   private final KkGuardCatalogService catalog;
+  private final KkGuardScanService scans;
 
-  public KkGuardApiController(KkGuardCatalogService catalog) {
+  public KkGuardApiController(KkGuardCatalogService catalog, KkGuardScanService scans) {
     this.catalog = catalog;
+    this.scans = scans;
   }
 
   @GetMapping("/organizations")
@@ -84,5 +89,35 @@ public class KkGuardApiController {
   public ResponseEntity<Void> deleteApplication(@PathVariable("id") String id) {
     catalog.deleteApplication(id);
     return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping(
+      value = "/scan/applications/{applicationId}/sources/{sourceId}",
+      consumes = {
+          MediaType.APPLICATION_JSON_VALUE,
+          MediaType.APPLICATION_OCTET_STREAM_VALUE,
+          "application/cyclonedx+json",
+          "application/vnd.cyclonedx+json"
+      })
+  public KkGuardScanService.ScanStatusView submitScan(
+      @PathVariable("applicationId") String applicationId,
+      @PathVariable("sourceId") String sourceId,
+      @RequestHeader(value = HttpHeaders.CONTENT_TYPE, required = false) String contentType,
+      @RequestBody(required = false) byte[] sbom) {
+    return scans.submit(applicationId, sourceId, contentType, sbom);
+  }
+
+  @GetMapping("/scan/applications/{applicationId}/sources/{sourceId}/status")
+  public KkGuardScanService.ScanStatusView scanStatus(
+      @PathVariable("applicationId") String applicationId,
+      @PathVariable("sourceId") String sourceId) {
+    return scans.status(applicationId, sourceId);
+  }
+
+  @GetMapping("/applications/{applicationId}/reports/{scanId}")
+  public KkGuardScanService.ReportView report(
+      @PathVariable("applicationId") String applicationId,
+      @PathVariable("scanId") String scanId) {
+    return scans.report(applicationId, scanId);
   }
 }
