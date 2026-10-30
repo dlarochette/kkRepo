@@ -449,7 +449,7 @@ Current format coverage:
 | Ansible | yes | collection version list + detail | `AnsibleStagingContentAdapter` |
 | Git LFS | yes | n/a (batch API resolves objects) | `GitLfsStagingContentAdapter` |
 | Yum | yes | `repomd.xml` + primary/filelists/other | `YumStagingContentAdapter` |
-| APT | yes | `Packages`/`Release` regeneration pending | `AptStagingContentAdapter` |
+| APT | yes | `Packages` (+gz/xz/bz2), `Release`, `InRelease`, `Release.gpg` | `AptStagingContentAdapter` |
 | Alpine | yes | signed `APKINDEX.tar.gz` | `AlpineStagingContentAdapter` |
 | R | yes | `PACKAGES.gz` | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
