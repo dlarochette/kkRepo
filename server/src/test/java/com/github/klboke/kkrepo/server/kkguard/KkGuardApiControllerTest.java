@@ -1,6 +1,7 @@
 package com.github.klboke.kkrepo.server.kkguard;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -12,6 +13,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.server.kkguard.KkGuardCatalogService.ApplicationInput;
 import com.github.klboke.kkrepo.server.kkguard.KkGuardCatalogService.ApplicationView;
 import com.github.klboke.kkrepo.server.kkguard.KkGuardCatalogService.OrganizationView;
@@ -28,20 +31,24 @@ import org.springframework.web.server.ResponseStatusException;
 class KkGuardApiControllerTest {
   private static final String ORG = "11111111-1111-1111-1111-111111111111";
   private static final String APP = "22222222-2222-2222-2222-222222222222";
+  private static final ObjectMapper JSON = new ObjectMapper();
 
   private KkGuardCatalogService catalog;
   private KkGuardScanService scans;
+  private KkGuardProperties properties;
   private MockMvc mvc;
 
   @BeforeEach
   void setUp() {
     catalog = mock(KkGuardCatalogService.class);
     scans = mock(KkGuardScanService.class);
-    mvc = MockMvcBuilders.standaloneSetup(new KkGuardApiController(catalog, scans)).build();
+    properties = new KkGuardProperties();
+    mvc = MockMvcBuilders.standaloneSetup(
+        new KkGuardApiController(catalog, scans, properties)).build();
   }
 
   @Test
-  void organizationsListAndCreationUseIqShapes() throws Exception {
+  void organizationListsUseTheIqEnvelope() throws Exception {
     when(catalog.listOrganizations()).thenReturn(List.of(
         new OrganizationView(ORG, "Payments", "payment org")));
     when(catalog.createOrganization(any())).thenReturn(
@@ -49,15 +56,18 @@ class KkGuardApiControllerTest {
 
     var listed = mvc.perform(get("/api/v2/organizations")).andReturn().getResponse();
     assertEquals(200, listed.getStatus());
-    assertTrue(listed.getContentAsString().contains(
-        "\"id\":\"" + ORG + "\",\"name\":\"Payments\",\"description\":\"payment org\""));
+    JsonNode body = JSON.readTree(listed.getContentAsString());
+    // The IQ contract is ApiOrganizationListDTO, an envelope object with an "organizations" array.
+    assertTrue(body.isObject(), "list payload must be an envelope, not a bare array");
+    assertEquals(ORG, body.path("organizations").get(0).path("id").asText());
+    assertEquals("Payments", body.path("organizations").get(0).path("name").asText());
 
     var created = mvc.perform(post("/api/v2/organizations")
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"name\":\"Payments\",\"description\":\"payment org\"}"))
         .andReturn().getResponse();
     assertEquals(200, created.getStatus());
-    assertTrue(created.getContentAsString().contains("\"name\":\"Payments\""));
+    assertEquals(ORG, JSON.readTree(created.getContentAsString()).path("id").asText());
     verify(catalog).createOrganization(eq(new KkGuardCatalogService.OrganizationInput(
         "Payments", "payment org")));
 
@@ -67,7 +77,7 @@ class KkGuardApiControllerTest {
   }
 
   @Test
-  void applicationsExposeNexusIqFields() throws Exception {
+  void applicationsExposeNexusIqFieldsAndListEnvelopes() throws Exception {
     ApplicationView view = new ApplicationView(
         APP, "orders-api", "Orders API", ORG, "jdoe",
         List.of(new TagView("tag-uuid", "payments", "payment services")));
@@ -75,18 +85,23 @@ class KkGuardApiControllerTest {
     when(catalog.listApplicationsByOrganization(ORG)).thenReturn(List.of(view));
     when(catalog.application(APP)).thenReturn(view);
     when(catalog.createApplication(any())).thenReturn(view);
+    when(catalog.updateApplication(eq(APP), any())).thenReturn(view);
 
-    var listed = mvc.perform(get("/api/v2/applications")).andReturn().getResponse();
-    assertEquals(200, listed.getStatus());
-    String body = listed.getContentAsString();
-    assertTrue(body.contains("\"id\":\"" + APP + "\""));
-    assertTrue(body.contains("\"publicId\":\"orders-api\""));
-    assertTrue(body.contains("\"organizationId\":\"" + ORG + "\""));
-    assertTrue(body.contains("\"contactUserName\":\"jdoe\""));
-    assertTrue(body.contains("\"applicationTags\":[{\"id\":\"tag-uuid\",\"name\":\"payments\""));
+    String listed = mvc.perform(get("/api/v2/applications")).andReturn()
+        .getResponse().getContentAsString();
+    JsonNode envelope = JSON.readTree(listed);
+    assertTrue(envelope.isObject(), "list payload must be an envelope, not a bare array");
+    JsonNode application = envelope.path("applications").get(0);
+    assertEquals(APP, application.path("id").asText());
+    assertEquals("orders-api", application.path("publicId").asText());
+    assertEquals(ORG, application.path("organizationId").asText());
+    assertEquals("jdoe", application.path("contactUserName").asText());
+    assertEquals("tag-uuid", application.path("applicationTags").get(0).path("id").asText());
 
-    assertEquals(200, mvc.perform(get("/api/v2/applications/organization/" + ORG))
-        .andReturn().getResponse().getStatus());
+    JsonNode byOrganization = JSON.readTree(mvc.perform(
+            get("/api/v2/applications/organization/" + ORG)).andReturn()
+        .getResponse().getContentAsString());
+    assertEquals(1, byOrganization.path("applications").size());
     assertEquals(200, mvc.perform(get("/api/v2/applications/" + APP))
         .andReturn().getResponse().getStatus());
 
@@ -106,8 +121,12 @@ class KkGuardApiControllerTest {
             .content("{\"publicId\":\"orders-api\",\"name\":\"Orders\",\"organizationId\":\""
                 + ORG + "\"}"))
         .andReturn().getResponse();
-    assertEquals(204, updated.getStatus());
-    assertEquals("", updated.getContentAsString());
+    // IQ answers 200 with the updated DTO; 204 with an empty body breaks chained clients.
+    assertEquals(200, updated.getStatus());
+    JsonNode updatedBody = JSON.readTree(updated.getContentAsString());
+    assertEquals(APP, updatedBody.path("id").asText());
+    assertEquals("orders-api", updatedBody.path("publicId").asText());
+    assertFalse(updatedBody.isEmpty());
 
     assertEquals(204, mvc.perform(delete("/api/v2/applications/" + APP))
         .andReturn().getResponse().getStatus());
@@ -134,6 +153,20 @@ class KkGuardApiControllerTest {
 
     assertEquals(400, mvc.perform(post("/api/v2/applications")
             .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"Orders\"}"))
+        .andReturn().getResponse().getStatus());
+  }
+
+  @Test
+  void disabledProductAnswersNotFoundOnEverySurface() throws Exception {
+    properties.setEnabled(false);
+
+    assertEquals(404, mvc.perform(get("/api/v2/organizations"))
+        .andReturn().getResponse().getStatus());
+    assertEquals(404, mvc.perform(get("/api/v2/applications"))
+        .andReturn().getResponse().getStatus());
+    assertEquals(404, mvc.perform(post("/api/v2/scan/applications/" + APP + "/sources/build")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"bomFormat\":\"CycloneDX\",\"specVersion\":\"1.5\",\"components\":[]}"))
         .andReturn().getResponse().getStatus());
   }
 

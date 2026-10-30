@@ -116,7 +116,7 @@ public class KkGuardCatalogService {
   }
 
   @Transactional
-  public void updateApplication(String id, ApplicationInput input) {
+  public ApplicationView updateApplication(String id, ApplicationInput input) {
     Application current = requireApplication(id);
     Validated validated = validate(input);
     Organization organization = requireOrganization(input.organizationId());
@@ -130,6 +130,7 @@ public class KkGuardCatalogService {
               + "' already exists in this organization");
     }
     dao.replaceApplicationTags(current.id(), withOwner(current.id(), validated.tags()));
+    return application(dao.findApplication(current.id()).orElseThrow());
   }
 
   @Transactional

@@ -13,7 +13,8 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "kkrepo.kkg")
 public class KkGuardProperties {
-  private boolean enabled;
+  /** Enabled by default: kkGuard is only dark when an operator explicitly opts out. */
+  private boolean enabled = true;
   private final DependencyTrack dependencyTrack = new DependencyTrack();
   private final Worker worker = new Worker();
   private long maxSbomBytes = 32L * 1024 * 1024;

@@ -127,11 +127,15 @@ class KkGuardCatalogServiceTest {
   void updatesKeepTheExternalIdentityAndReplaceTags() {
     when(dao.findApplicationByExternalId(APP_UUID)).thenReturn(Optional.of(application()));
     when(dao.findOrganizationByExternalId(ORG_UUID)).thenReturn(Optional.of(organization()));
+    when(dao.findApplication(11L)).thenReturn(Optional.of(application()));
+    when(dao.findOrganization(7L)).thenReturn(Optional.of(organization()));
 
-    service.updateApplication(APP_UUID, new ApplicationInput(
+    var updated = service.updateApplication(APP_UUID, new ApplicationInput(
         "orders-v2", "Orders v2", ORG_UUID, "asmith",
         List.of(new TagView(null, "critical", "tier 0"))));
 
+    // The PUT response must carry the re-read DTO, not null.
+    assertEquals(APP_UUID, updated.id());
     verify(dao).updateApplication(
         eq(11L), eq(7L), eq(APP_UUID), eq("orders-v2"), eq("Orders v2"), eq(5L), eq("asmith"),
         any());
