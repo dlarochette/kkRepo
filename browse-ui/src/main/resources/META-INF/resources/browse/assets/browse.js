@@ -527,10 +527,19 @@ function applyUiContext(context) {
   updateTopbarAuth();
 }
 
-function permissionPartMatches(grantedPart, requestedPart) {
-  const requested = (requestedPart || "*").toLowerCase();
+function permissionPartMatches(grantedPart, requestedPart, action = false) {
+  const normalize = (part) => {
+    const value = (part || "*").trim().toLowerCase();
+    if (!action) return value;
+    if (value === "create") return "add";
+    if (value === "update") return "edit";
+    return value === "all" ? "*" : value;
+  };
+  const requested = normalize(requestedPart);
   return (grantedPart || "*").split(",").some((part) => {
-    const normalized = part.trim().toLowerCase();
+    // Backend ALL grants concrete actions, but only a literal * satisfies a wildcard request.
+    if (action && (requestedPart || "*").trim() === "*") return part.trim() === "*";
+    const normalized = normalize(part);
     return normalized === "*" || normalized === requested;
   });
 }
@@ -538,9 +547,13 @@ function permissionPartMatches(grantedPart, requestedPart) {
 function permissionMatches(granted, requested) {
   const grantedParts = (granted || "").toLowerCase().split(":");
   const requestedParts = (requested || "").toLowerCase().split(":");
+  const domain = requestedParts[1];
+  const actionIndex = ["repository-view", "repository-admin"].includes(domain) ? 4
+    : domain === "repository-content-selector" ? 5
+    : grantedParts[0] === "nexus" && requestedParts[0] === "nexus" ? 2 : -1;
   const length = Math.max(grantedParts.length, requestedParts.length);
   for (let index = 0; index < length; index += 1) {
-    if (!permissionPartMatches(grantedParts[index], requestedParts[index])) return false;
+    if (!permissionPartMatches(grantedParts[index], requestedParts[index], index === actionIndex)) return false;
   }
   return true;
 }
@@ -550,7 +563,8 @@ function can(permission) {
 }
 
 function hasAdminEntryPermission() {
-  return can("nexus:*") || ["read", "create", "update", "delete"]
+  return can("nexus:*") || can("nexus:security-scanning:read")
+    || ["read", "create", "update", "delete"]
     .some((action) => can(`nexus:selectors:${action}`));
 }
 
@@ -617,6 +631,13 @@ function uploadEmptyStateMessage() {
     + "with \"docker push\" instead.";
 }
 
+function adminEntryUrl() {
+  if (can("nexus:*")) return "/admin/";
+  return can("nexus:security-scanning:read")
+    ? "/admin/#admin/security/artifact-scanning"
+    : "/admin/#admin/repository/content-selectors";
+}
+
 function updateTopbarAuth() {
   const adminLink = document.getElementById("admin-workspace-link");
   const loginButton = document.getElementById("login-button");
@@ -630,7 +651,7 @@ function updateTopbarAuth() {
   const signedIn = Boolean(currentSession && currentSession.userId);
   if (adminLink) {
     adminLink.hidden = !signedIn || !hasAdminEntryPermission();
-    adminLink.href = can("nexus:*") ? "/admin/" : "/admin/#admin/repository/content-selectors";
+    adminLink.href = adminEntryUrl();
   }
   loginButton.hidden = signedIn;
   userMenu.hidden = !signedIn;

@@ -2,6 +2,9 @@ package com.github.klboke.kkrepo.server.securityscan;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -14,6 +17,7 @@ import static org.mockito.Mockito.when;
 
 import com.github.klboke.kkrepo.auth.AccessDecision;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
+import com.github.klboke.kkrepo.auth.PermissionAction;
 import com.github.klboke.kkrepo.auth.RepositoryPermission;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryType;
@@ -25,6 +29,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao.ScanFinding;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao.ScanPolicy;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao.ScanRunSubject;
+import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao.ScanRunSubjectAsset;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao.ScanWaiver;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
@@ -84,9 +89,90 @@ class SecurityScanManagementServiceWaiverTest {
     PermissionSubject permissions =
         new PermissionSubject("test", "security-admin", Set.of("nx-admin"), null);
     actor = new AuthenticatedSubject("test", "security-admin", "local", null, permissions);
+    when(security.decide(eq(permissions), any(String.class))).thenReturn(AccessDecision.deny("missing"));
     when(security.decide(
         eq(permissions), eq("nexus:security-scanning-waivers:create")))
         .thenReturn(AccessDecision.allow());
+  }
+
+  @Test
+  void findingCapabilitiesReadOnlySourceIdsAndReuseGroupMembershipOnlyWithinTheRequest() {
+    var group = repository(12L, "group", RepositoryType.GROUP);
+    when(repositories.list()).thenReturn(List.of(group));
+    when(security.decide(eq(actor.permissionSubject()), any(RepositoryPermission.class)))
+        .thenReturn(AccessDecision.allow());
+    when(scans.listFindingsByRepositories(List.of(12L), null, null, null, 0, 11))
+        .thenReturn(List.of(finding(41L, 7L)));
+    when(scans.listRunSubjectAssets(7L, 0, 0, 1000, false)).thenReturn(List.of(
+        new ScanRunSubjectAsset(new ScanRunSubject(7L, 12L, 23L, 3L, 1L, Instant.now()), 11L),
+        new ScanRunSubjectAsset(new ScanRunSubject(7L, 12L, 24L, 3L, 1L, Instant.now()), 11L),
+        new ScanRunSubjectAsset(new ScanRunSubject(7L, 12L, 25L, 3L, 1L, Instant.now()), null)));
+    when(repositoryScope.sourceRepositoryIds(12L)).thenReturn(List.of(11L));
+
+    assertTrue(service.findingPage(actor, null, null, null, null, 0, 10)
+        .items().getFirst().canCreateWaiver());
+    verify(repositoryScope).sourceRepositoryIds(12L);
+    verify(assets, never()).findAssetsByIds(any());
+    verify(assets, never()).findAssetById(anyLong());
+
+    when(repositoryScope.sourceRepositoryIds(12L)).thenReturn(List.of());
+    assertFalse(service.findingPage(actor, null, null, null, null, 0, 10)
+        .items().getFirst().canCreateWaiver());
+    verify(repositoryScope, org.mockito.Mockito.times(2)).sourceRepositoryIds(12L);
+  }
+
+  @Test
+  void waiverDeleteCapabilitiesMatchScopedAndGlobalAuthorization() {
+    var scoped = waiver(51L, 11L, null, null, "CVE-2026-0041", null, "accepted", Instant.now().plusSeconds(60), Instant.now());
+    var global = waiver(52L, null, null, null, "CVE-2026-0041", null, "accepted", Instant.now().plusSeconds(60), Instant.now());
+    when(repositories.list()).thenReturn(List.of(repository(11L, "visible")));
+    when(repositories.findById(11L)).thenReturn(Optional.of(repository(11L, "visible")));
+    when(security.decide(eq(actor.permissionSubject()), any(RepositoryPermission.class)))
+        .thenReturn(AccessDecision.allow());
+    when(security.decide(eq(actor.permissionSubject()), any(String.class)))
+        .thenReturn(AccessDecision.deny("missing"));
+    when(security.decide(actor.permissionSubject(), "nexus:security-scanning:read"))
+        .thenReturn(AccessDecision.allow());
+    when(scans.listWaivers(null, null, 0, 100)).thenReturn(List.of(scoped, global));
+    assertTrue(service.waivers(actor, null, 0, 10).stream().noneMatch(view -> view.canDelete()));
+    when(security.decide(actor.permissionSubject(), "nexus:security-scanning-waivers:delete"))
+        .thenReturn(AccessDecision.allow());
+    var views = service.waivers(actor, null, 0, 10);
+    assertTrue(views.get(0).canDelete());
+    assertFalse(views.get(1).canDelete());
+    when(security.decide(actor.permissionSubject(), "nexus:security-scanning:update"))
+        .thenReturn(AccessDecision.allow());
+    assertTrue(service.waivers(actor, null, 0, 10).get(1).canDelete());
+    when(security.decide(eq(actor.permissionSubject()),
+        argThat((RepositoryPermission permission) -> permission.action() == PermissionAction.ADMIN)))
+        .thenReturn(AccessDecision.deny("browse only"));
+    assertFalse(service.waivers(actor, null, 0, 10).get(0).canDelete());
+  }
+
+  @Test
+  void legacyAssetWaiversReuseTheResolvedAssetAndRepositoryForDeletionHints() {
+    var repository = repository(11L, "visible");
+    var legacy = waiver(51L, null, 23L, 41L, null, null, "accepted",
+        Instant.now().plusSeconds(60), Instant.now());
+    when(repositories.list()).thenReturn(List.of(repository));
+    when(security.decide(eq(actor.permissionSubject()), any(RepositoryPermission.class)))
+        .thenReturn(AccessDecision.allow());
+    when(security.decide(eq(actor.permissionSubject()), any(String.class)))
+        .thenReturn(AccessDecision.allow());
+    when(scans.listWaivers(null, null, 0, 100)).thenReturn(List.of(legacy));
+    when(assets.findAssetById(23L)).thenReturn(Optional.of(asset(23L, 11L, "legacy.jar")));
+    when(scans.findFinding(41L)).thenReturn(Optional.of(finding(41L, 7L)));
+
+    var view = service.waivers(actor, null, 0, 10).getFirst();
+    assertEquals("visible", view.repository());
+    assertEquals("legacy.jar", view.assetPath());
+    assertTrue(view.canDelete());
+    // One visibility lookup and one display lookup; capability checks reuse the display result.
+    verify(assets, org.mockito.Mockito.times(2)).findAssetById(23L);
+    verify(repositories, never()).findById(anyLong());
+
+    when(repositories.list()).thenReturn(List.of());
+    assertTrue(service.waivers(actor, null, 0, 10).isEmpty());
   }
 
   @Test
@@ -100,6 +186,8 @@ class SecurityScanManagementServiceWaiverTest {
     when(scans.listFindingsByRepositories(List.of(11L), null, Severity.HIGH, "app", 0L, 2, true))
         .thenReturn(List.of(finding(41L, 7L), finding(42L, 7L)));
     when(scans.listRunSubjects(7L, 0L, 0L, 1000, true)).thenReturn(List.of(subject, hidden));
+    when(scans.listRunSubjectAssets(7L, 0L, 0L, 1000, true)).thenReturn(List.of(
+        new ScanRunSubjectAsset(subject, 11L), new ScanRunSubjectAsset(hidden, 12L)));
     when(scans.countCurrentRunSubjects(7L, List.of(11L), true)).thenReturn(1L);
     when(scans.listCurrentRunSubjects(7L, List.of(11L), 0L, 0L, 3, true)).thenReturn(List.of(subject));
     when(assets.findAssetsByIds(List.of(23L))).thenReturn(Map.of(23L, asset(23L, 11L, "app.jar")));
@@ -121,6 +209,12 @@ class SecurityScanManagementServiceWaiverTest {
     when(security.decide(actor.permissionSubject(), "nexus:security-scanning:read"))
         .thenReturn(AccessDecision.allow());
     assertEquals(1, service.findingWaiverContext(actor, 41L, true).targetCount());
+    assertTrue(service.findingPage(actor, null, null, Severity.HIGH, "app", 0, 1, true)
+        .items().getFirst().canCreateWaiver());
+    when(security.decide(actor.permissionSubject(), "nexus:security-scanning-waivers:create"))
+        .thenReturn(AccessDecision.deny("read only"));
+    assertFalse(service.findingPage(actor, null, null, Severity.HIGH, "app", 0, 1, true)
+        .items().getFirst().canCreateWaiver());
     assertEquals(0, service.findingWaivers(actor, 41L, true).activeWaiverCount());
     verify(scans, never()).listRunSubjects(anyLong(), anyLong(), anyLong(), anyInt());
     when(scans.listFindings(11L, null, Severity.HIGH, "app", 41L, 2, true)).thenReturn(List.of());
@@ -214,6 +308,8 @@ class SecurityScanManagementServiceWaiverTest {
         .thenReturn(List.of(finding(41L, 7L), finding(42L, 8L)));
     when(scans.listRunSubjects(eq(7L), anyLong(), anyLong(), anyInt()))
         .thenReturn(List.of(new ScanRunSubject(7L, 11L, 23L, 3L, 1L, now)));
+    when(scans.listRunSubjectAssets(eq(7L), anyLong(), anyLong(), anyInt(), eq(false)))
+        .thenReturn(List.of(new ScanRunSubjectAsset(new ScanRunSubject(7L, 11L, 23L, 3L, 1L, now), 11L)));
     when(scans.listWaiversForFindings(
         any(), any(), any(), any(), anyLong(), anyInt()))
         .thenReturn(List.of());
@@ -246,6 +342,8 @@ class SecurityScanManagementServiceWaiverTest {
         .thenReturn(List.of(finding(41L, 7L)));
     when(scans.listRunSubjects(eq(7L), anyLong(), anyLong(), anyInt()))
         .thenReturn(subjects);
+    when(scans.listRunSubjectAssets(eq(7L), anyLong(), anyLong(), anyInt(), eq(false)))
+        .thenReturn(subjects.stream().map(subject -> new ScanRunSubjectAsset(subject, 11L)).toList());
     when(scans.countCurrentRunSubjects(7L, List.of(11L, 12L))).thenReturn(2L);
     when(scans.listCurrentRunSubjects(7L, List.of(11L, 12L), 0L, 0L, 3))
         .thenReturn(subjects);
@@ -458,6 +556,8 @@ class SecurityScanManagementServiceWaiverTest {
         .thenReturn(List.of(finding(41L, 7L)));
     when(scans.listRunSubjects(eq(7L), anyLong(), anyLong(), anyInt()))
         .thenReturn(List.of(new ScanRunSubject(7L, 11L, 23L, 3L, 1L, now)));
+    when(scans.listRunSubjectAssets(eq(7L), anyLong(), anyLong(), anyInt(), eq(false)))
+        .thenReturn(List.of(new ScanRunSubjectAsset(new ScanRunSubject(7L, 11L, 23L, 3L, 1L, now), 11L)));
     when(scans.listWaiversForFindings(
         any(), any(), any(), any(), anyLong(), anyInt()))
         .thenReturn(List.of());
@@ -482,6 +582,8 @@ class SecurityScanManagementServiceWaiverTest {
         List.of(11L), null, null, null, 0L, 2)).thenReturn(List.of(finding));
     when(scans.listRunSubjects(eq(7L), anyLong(), anyLong(), anyInt()))
         .thenReturn(List.of(new ScanRunSubject(7L, 11L, 23L, 3L, 1L, now)));
+    when(scans.listRunSubjectAssets(eq(7L), anyLong(), anyLong(), anyInt(), eq(false)))
+        .thenReturn(List.of(new ScanRunSubjectAsset(new ScanRunSubject(7L, 11L, 23L, 3L, 1L, now), 11L)));
     List<ScanWaiver> firstPage = java.util.stream.LongStream.rangeClosed(1, 256)
         .mapToObj(id -> waiver(
             id,
@@ -515,6 +617,7 @@ class SecurityScanManagementServiceWaiverTest {
 
     assertEquals(257, page.items().getFirst().activeWaiverCount());
     assertEquals(1, page.items().getFirst().waivedTargetCount());
+    assertFalse(page.items().getFirst().canCreateWaiver());
     verify(scans).listWaiversForFindings(
         any(), any(), any(), any(), eq(256L), eq(256));
   }
@@ -702,6 +805,8 @@ class SecurityScanManagementServiceWaiverTest {
     when(scans.findFinding(41L)).thenReturn(Optional.of(finding));
     when(scans.listRunSubjects(eq(7L), anyLong(), anyLong(), anyInt()))
         .thenReturn(List.of(subject, secondSubject));
+    when(scans.listRunSubjectAssets(eq(7L), anyLong(), anyLong(), anyInt(), eq(false)))
+        .thenReturn(List.of(new ScanRunSubjectAsset(subject, 11L), new ScanRunSubjectAsset(secondSubject, 12L)));
     when(scans.listWaiversForFindings(
         any(), any(), any(), any(), anyLong(), anyInt()))
         .thenReturn(List.of(active, overlapping, expired));

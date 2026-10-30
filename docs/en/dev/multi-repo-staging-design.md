@@ -417,7 +417,7 @@ to upload staged content without being able to publish it.
 
 | Area | Location |
 | --- | --- |
-| Schema | `V60__multi_repo_staging.sql` (MySQL and PostgreSQL) |
+| Schema | `V61__multi_repo_staging.sql` and `V62__staging_group_change.sql` (MySQL and PostgreSQL) |
 | Durable state | `StagingDao`, `JdbcStagingDao`, `staging_session`, `staging_session_repository`, `staging_item`, `staging_promotion` |
 | Lifecycle | `server/staging/StagingService.java` |
 | Internal API | `server/staging/StagingController.java` |

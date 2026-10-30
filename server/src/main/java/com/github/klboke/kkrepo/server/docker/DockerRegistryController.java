@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.docker;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.server.security.ClientAddress;
 
 import com.github.klboke.kkrepo.auth.AccessDecisionService;
@@ -44,6 +45,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/v2")
 public class DockerRegistryController {
+  private RepositoryRoutingPolicy routingPolicy;
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setRoutingPolicy(RepositoryRoutingPolicy policy) {
+    this.routingPolicy = policy;
+  }
+
   private final RepositoryRuntimeRegistry registry;
   private final DockerHostedService hosted;
   private final DockerProxyService proxy;
@@ -95,7 +103,7 @@ public class DockerRegistryController {
     if (target.path().kind() == DockerPath.Kind.BASE) {
       return registryBase();
     }
-    RepositoryRuntime runtime = runtime(target);
+    RepositoryRuntime runtime = runtime(target, request);
     return switch (target.path().kind()) {
       case MANIFEST -> {
         ResponseEntity<?> staged = stagedManifest(request, runtime, target.path(), false);
@@ -125,7 +133,7 @@ public class DockerRegistryController {
     if (target.path().kind() == DockerPath.Kind.BASE) {
       return registryBase();
     }
-    RepositoryRuntime runtime = runtime(target);
+    RepositoryRuntime runtime = runtime(target, request);
     return switch (target.path().kind()) {
       case MANIFEST -> {
         ResponseEntity<?> staged = stagedManifest(request, runtime, target.path(), true);
@@ -145,7 +153,7 @@ public class DockerRegistryController {
       @RequestParam(name = "mount", required = false) String mount,
       @RequestParam(name = "from", required = false) String from) {
     DockerTarget target = target(request);
-    RepositoryRuntime runtime = runtime(target);
+    RepositoryRuntime runtime = runtime(target, request);
     DockerPath path = target.path();
     if (path.kind() != DockerPath.Kind.UPLOAD_START) {
       throw new DockerProtocolException(DockerErrorCode.UNSUPPORTED, "unsupported Docker POST path", 405);
@@ -172,7 +180,7 @@ public class DockerRegistryController {
       HttpServletRequest request,
       @RequestHeader(name = "Content-Range", required = false) String contentRange) throws IOException {
     DockerTarget target = target(request);
-    RepositoryRuntime runtime = runtime(target);
+    RepositoryRuntime runtime = runtime(target, request);
     DockerPath path = target.path();
     if (path.kind() != DockerPath.Kind.UPLOAD_SESSION) {
       throw new DockerProtocolException(DockerErrorCode.UNSUPPORTED, "unsupported Docker PATCH path", 405);
@@ -190,7 +198,7 @@ public class DockerRegistryController {
       @RequestHeader(name = HttpHeaders.CONTENT_TYPE, required = false) String contentType,
       @RequestHeader(name = "Content-Range", required = false) String contentRange) throws IOException {
     DockerTarget target = target(request);
-    RepositoryRuntime runtime = runtime(target);
+    RepositoryRuntime runtime = runtime(target, request);
     DockerPath path = target.path();
     if (path.kind() == DockerPath.Kind.MANIFEST && staging != null
         && staged(request)) {
@@ -233,7 +241,7 @@ public class DockerRegistryController {
   @DeleteMapping("/**")
   public ResponseEntity<?> delete(HttpServletRequest request) {
     DockerTarget target = target(request);
-    RepositoryRuntime runtime = runtime(target);
+    RepositoryRuntime runtime = runtime(target, request);
     DockerPath path = target.path();
     if (path.kind() == DockerPath.Kind.MANIFEST && staging != null
         && staged(request)) {
@@ -444,7 +452,7 @@ public class DockerRegistryController {
     return new DockerTarget(repository, parser.parse(raw.substring(slash + 1)), false);
   }
 
-  private RepositoryRuntime runtime(DockerTarget target) {
+  private RepositoryRuntime runtime(DockerTarget target, HttpServletRequest request) {
     if (target.repository() == null || target.repository().isBlank()) {
       throw new DockerProtocolException(DockerErrorCode.NAME_UNKNOWN, "Docker repository route is missing");
     }
@@ -452,6 +460,22 @@ public class DockerRegistryController {
         .orElseThrow(() -> new DockerProtocolException(DockerErrorCode.NAME_UNKNOWN, target.repository()));
     if (runtime.format() != RepositoryFormat.DOCKER) {
       throw new DockerProtocolException(DockerErrorCode.NAME_UNKNOWN, target.repository());
+    }
+    if (routingPolicy != null && ("GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod()))) {
+      // The target parser has already decoded segments and normalized digest identities.
+      // Match that same resource, including connector routes without a repository prefix.
+      DockerPath parsed = target.path();
+      String path = "/v2/" + switch (parsed.kind()) {
+        case BASE -> "";
+        case CATALOG -> "_catalog";
+        case MANIFEST -> parsed.imageName() + "/manifests/" + parsed.reference();
+        case BLOB -> parsed.imageName() + "/blobs/" + parsed.digest().value();
+        case REFERRERS -> parsed.imageName() + "/referrers/" + parsed.digest().value();
+        case TAGS -> parsed.imageName() + "/tags/list";
+        case UPLOAD_START -> parsed.imageName() + "/blobs/uploads";
+        case UPLOAD_SESSION -> parsed.imageName() + "/blobs/uploads/" + parsed.uploadUuid();
+      };
+      runtime = routingPolicy.prepareCanonical(runtime, path, request);
     }
     return runtime;
   }

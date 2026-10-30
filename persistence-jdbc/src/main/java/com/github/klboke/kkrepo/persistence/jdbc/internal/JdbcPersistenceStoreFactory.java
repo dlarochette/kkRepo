@@ -33,6 +33,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.ProxyStateDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.PubUploadSessionDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDataMigrationDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryIndexRebuildDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityAuditDao;
@@ -93,6 +94,7 @@ public final class JdbcPersistenceStoreFactory implements PersistenceStoreFactor
         new JdbcRRegistryDao(jdbc, json, dialect),
         new JdbcPubUploadSessionDao(jdbc, json),
         new JdbcRepositoryDao(jdbc, json),
+        new JdbcRoutingRuleDao(jdbc, json),
         new JdbcRepositoryDataMigrationDao(jdbc, json, dialect),
         new JdbcRepositoryIndexRebuildDao(jdbc, dialect),
         new JdbcSecurityAuditDao(jdbc, json),
@@ -134,6 +136,7 @@ public final class JdbcPersistenceStoreFactory implements PersistenceStoreFactor
       RRegistryDao rRegistry,
       PubUploadSessionDao pubUploadSessions,
       RepositoryDao repositories,
+      RoutingRuleDao routingRules,
       RepositoryDataMigrationDao repositoryDataMigrations,
       RepositoryIndexRebuildDao repositoryIndexRebuild,
       SecurityAuditDao securityAudit,
