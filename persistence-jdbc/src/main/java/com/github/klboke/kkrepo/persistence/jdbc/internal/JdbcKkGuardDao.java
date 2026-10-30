@@ -18,6 +18,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcKkGuardDao implements KkGuardDao {
   private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
+  private static final String CLAIMABLE_STATUSES = "status IN ('PENDING', 'SCANNING')";
   private final JdbcTemplate jdbc;
   private final JsonColumns json;
 
@@ -33,13 +34,17 @@ public class JdbcKkGuardDao implements KkGuardDao {
   private final RowMapper<Application> applications = (rs, n) -> new Application(
       rs.getLong("id"), rs.getLong("organization_id"), rs.getString("external_id"),
       rs.getString("public_id"), rs.getString("name"), nullableLong(rs, "repository_id"),
-      instant(rs, "created_at"), instant(rs, "updated_at"));
+      rs.getString("contact_user_name"), rs.getString("dt_project_uuid"),
+      rs.getString("dt_project_name"), instant(rs, "created_at"), instant(rs, "updated_at"));
 
   private final RowMapper<Scan> scans = (rs, n) -> new Scan(
       rs.getLong("id"), rs.getLong("application_id"), rs.getString("scan_id"),
       rs.getString("status"), rs.getString("stage"), rs.getString("source_id"),
       rs.getString("sbom_sha256"), rs.getString("report_sha256"),
       rs.getInt("component_count"), rs.getInt("violation_count"), rs.getString("error"),
+      rs.getString("dt_project_uuid"), rs.getString("dt_bom_token"), rs.getInt("attempts"),
+      rs.getString("lease_owner"), instant(rs, "lease_expires_at"),
+      instant(rs, "submitted_at"), instant(rs, "last_polled_at"),
       instant(rs, "created_at"), instant(rs, "started_at"), instant(rs, "completed_at"));
 
   private final RowMapper<ScanComponent> components = (rs, n) -> new ScanComponent(
@@ -138,11 +143,12 @@ public class JdbcKkGuardDao implements KkGuardDao {
   @Override
   public long insertApplication(
       long organizationId, String externalId, String publicId, String name, Long repositoryId,
-      Instant now) {
+      String contactUserName, Instant now) {
     return JdbcInserts.insert(jdbc, """
         INSERT INTO kkg_application
-          (organization_id, external_id, public_id, name, repository_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+          (organization_id, external_id, public_id, name, repository_id, contact_user_name,
+           created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, ps -> {
       ps.setLong(1, organizationId);
       ps.setString(2, externalId);
@@ -150,20 +156,22 @@ public class JdbcKkGuardDao implements KkGuardDao {
       ps.setString(4, name);
       if (repositoryId == null) ps.setNull(5, java.sql.Types.BIGINT);
       else ps.setLong(5, repositoryId);
-      ps.setTimestamp(6, Timestamp.from(now));
+      ps.setString(6, contactUserName);
       ps.setTimestamp(7, Timestamp.from(now));
+      ps.setTimestamp(8, Timestamp.from(now));
     });
   }
 
   @Override
   public boolean updateApplication(
       long id, long organizationId, String externalId, String publicId, String name,
-      Long repositoryId, Instant now) {
+      Long repositoryId, String contactUserName, Instant now) {
     return jdbc.update("""
         UPDATE kkg_application
         SET organization_id = ?, external_id = ?, public_id = ?, name = ?, repository_id = ?,
-          updated_at = ? WHERE id = ?
-        """, organizationId, externalId, publicId, name, repositoryId, Timestamp.from(now), id) > 0;
+          contact_user_name = ?, updated_at = ? WHERE id = ?
+        """, organizationId, externalId, publicId, name, repositoryId, contactUserName,
+        Timestamp.from(now), id) > 0;
   }
 
   @Override
@@ -172,12 +180,43 @@ public class JdbcKkGuardDao implements KkGuardDao {
   }
 
   @Override
+  public boolean updateApplicationDependencyTrackProject(
+      long id, String dtProjectUuid, String dtProjectName, Instant now) {
+    return jdbc.update("""
+        UPDATE kkg_application SET dt_project_uuid = ?, dt_project_name = ?, updated_at = ?
+        WHERE id = ?
+        """, dtProjectUuid, dtProjectName, Timestamp.from(now), id) > 0;
+  }
+
+  @Override
+  public List<ApplicationTag> listApplicationTags(long applicationId) {
+    return jdbc.query("""
+        SELECT application_id, name, description FROM kkg_application_tag
+        WHERE application_id = ? ORDER BY name
+        """, (rs, n) -> new ApplicationTag(
+        rs.getLong("application_id"), rs.getString("name"), rs.getString("description")),
+        applicationId);
+  }
+
+  @Override
+  public void replaceApplicationTags(long applicationId, List<ApplicationTag> tags) {
+    jdbc.update("DELETE FROM kkg_application_tag WHERE application_id = ?", applicationId);
+    for (ApplicationTag tag : tags) {
+      jdbc.update("""
+          INSERT INTO kkg_application_tag (application_id, name, description)
+          VALUES (?, ?, ?)
+          """, applicationId, tag.name(), tag.description());
+    }
+  }
+
+  @Override
   public long insertScan(Scan scan) {
     return JdbcInserts.insert(jdbc, """
         INSERT INTO kkg_scan
           (application_id, scan_id, status, stage, source_id, sbom_sha256, report_sha256,
-           component_count, violation_count, error, created_at, started_at, completed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           component_count, violation_count, error, dt_project_uuid, dt_bom_token, attempts,
+           submitted_at, last_polled_at, created_at, started_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, ps -> {
       ps.setLong(1, scan.applicationId());
       ps.setString(2, scan.scanId());
@@ -189,10 +228,15 @@ public class JdbcKkGuardDao implements KkGuardDao {
       ps.setInt(8, scan.componentCount());
       ps.setInt(9, scan.violationCount());
       ps.setString(10, scan.error());
-      ps.setTimestamp(11, Timestamp.from(
+      ps.setString(11, scan.dtProjectUuid());
+      ps.setString(12, scan.dtBomToken());
+      ps.setInt(13, scan.attempts());
+      bindInstant(ps, 14, scan.submittedAt());
+      bindInstant(ps, 15, scan.lastPolledAt());
+      ps.setTimestamp(16, Timestamp.from(
           scan.createdAt() == null ? Instant.now() : scan.createdAt()));
-      bindInstant(ps, 12, scan.startedAt());
-      bindInstant(ps, 13, scan.completedAt());
+      bindInstant(ps, 17, scan.startedAt());
+      bindInstant(ps, 18, scan.completedAt());
     });
   }
 
@@ -211,6 +255,77 @@ public class JdbcKkGuardDao implements KkGuardDao {
   public Optional<Scan> lockScanByScanId(String scanId) {
     return jdbc.query("SELECT * FROM kkg_scan WHERE scan_id = ? FOR UPDATE", scans, scanId)
         .stream().findFirst();
+  }
+
+  @Override
+  public Optional<Scan> findCompletedScanBySbom(
+      long applicationId, String sourceId, String sbomSha256) {
+    return jdbc.query("""
+        SELECT * FROM kkg_scan
+        WHERE application_id = ? AND COALESCE(source_id, '') = COALESCE(?, '')
+          AND sbom_sha256 = ? AND status = 'COMPLETE'
+        ORDER BY id DESC LIMIT 1
+        """, scans, applicationId, sourceId, sbomSha256).stream().findFirst();
+  }
+
+  @Override
+  public List<Long> listClaimableScanIds(Instant now, int limit) {
+    return jdbc.queryForList("""
+        SELECT id FROM kkg_scan
+        WHERE %s
+          AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+        ORDER BY id LIMIT ?
+        """.formatted(CLAIMABLE_STATUSES), Long.class, Timestamp.from(now),
+        Math.max(1, limit));
+  }
+
+  @Override
+  public boolean claimScan(long id, String owner, Instant now, Instant leaseExpiresAt) {
+    return jdbc.update("""
+        UPDATE kkg_scan SET lease_owner = ?, lease_expires_at = ?
+        WHERE id = ? AND %s
+          AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+        """.formatted(CLAIMABLE_STATUSES), owner, Timestamp.from(leaseExpiresAt), id,
+        Timestamp.from(now)) > 0;
+  }
+
+  @Override
+  public boolean releaseScan(long id, String owner) {
+    return jdbc.update("""
+        UPDATE kkg_scan SET lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = ? AND lease_owner = ?
+        """, id, owner) > 0;
+  }
+
+  @Override
+  public boolean markScanSubmitted(
+      long id, String owner, String dtProjectUuid, String dtBomToken, Instant submittedAt) {
+    return jdbc.update("""
+        UPDATE kkg_scan
+        SET status = 'SCANNING', dt_project_uuid = ?, dt_bom_token = ?, submitted_at = ?,
+          lease_owner = NULL, lease_expires_at = NULL, error = NULL
+        WHERE id = ? AND lease_owner = ?
+        """, dtProjectUuid, dtBomToken, Timestamp.from(submittedAt), id, owner) > 0;
+  }
+
+  @Override
+  public boolean markScanPolled(long id, String owner, int attempts, Instant polledAt) {
+    return jdbc.update("""
+        UPDATE kkg_scan SET attempts = ?, last_polled_at = ? WHERE id = ? AND lease_owner = ?
+        """, attempts, Timestamp.from(polledAt), id, owner) > 0;
+  }
+
+  @Override
+  public boolean finishScan(
+      long id, String owner, String status, String error, int componentCount,
+      int violationCount, Instant completedAt) {
+    return jdbc.update("""
+        UPDATE kkg_scan
+        SET status = ?, error = ?, component_count = ?, violation_count = ?, completed_at = ?,
+          lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = ? AND lease_owner = ?
+        """, status, error, componentCount, violationCount, Timestamp.from(completedAt), id,
+        owner) > 0;
   }
 
   @Override
