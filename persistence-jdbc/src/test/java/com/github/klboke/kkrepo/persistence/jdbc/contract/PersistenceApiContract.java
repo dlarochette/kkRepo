@@ -429,6 +429,13 @@ public abstract class PersistenceApiContract {
         "huggingface_model_revision",
         "huggingface_revision_ref",
         "huggingface_route_projection",
+        "kkq_analysis",
+        "kkq_branch",
+        "kkq_issue",
+        "kkq_measure",
+        "kkq_project",
+        "kkq_quality_gate",
+        "kkq_rule",
         "maintenance_cursor",
         "metadata_rebuild_marker",
         "migration_checkpoint",
@@ -6645,4 +6652,48 @@ public abstract class PersistenceApiContract {
       throw new IllegalStateException(e);
     }
   }
+  @Test
+  void kkQualityProjectsAnalysesIssuesRulesAndGatesRoundTrip() {
+    com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao dao = stores().kkQuality();
+    String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
+    Instant now = Instant.now();
+    String externalId = java.util.UUID.randomUUID().toString();
+    long projectId = dao.insertProject(
+        externalId, "project-" + suffix, "Project", "org", "private", now);
+    assertEquals(projectId, dao.findProjectByKey("project-" + suffix).orElseThrow().id());
+    assertEquals(projectId, dao.findProjectByExternalId(externalId).orElseThrow().id());
+    assertTrue(dao.updateProject(projectId, "project-" + suffix, "Project 2", "org", "public", now));
+    long branchId = dao.insertBranch(projectId, "main", true, now);
+    assertTrue(dao.findBranch(projectId, "main").isPresent());
+    String analysisExternalId = java.util.UUID.randomUUID().toString();
+    long analysisId = dao.insertAnalysis(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Analysis(
+            0L, projectId, branchId, analysisExternalId, "PENDING", null, null, 0,
+            now, null, null, null));
+    assertEquals("PENDING",
+        dao.findAnalysisByExternalId(analysisExternalId).orElseThrow().status());
+    assertTrue(dao.updateAnalysis(analysisId, "COMPLETE", 1, "a".repeat(64), null, now, now));
+    dao.upsertRule("semgrep", "rule-1", "Rule", "MAJOR", "java", "desc", "fix", now);
+    assertEquals(1, dao.countRules("semgrep", "rule"));
+    dao.replaceIssues(analysisId, List.of(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Issue(
+            0L, analysisId, projectId, branchId, "issue-" + suffix, "src/App.java", 10,
+            "semgrep", "rule-1", "MAJOR", "CODE_SMELL", "message", "OPEN", null, now, now)));
+    assertEquals(1, dao.countIssues(projectId, "OPEN", "rule-1", "MAJOR"));
+    assertEquals(1, dao.listIssues(projectId, "OPEN", null, null, 10, 0).size());
+    assertTrue(dao.updateIssue("issue-" + suffix, "CONFIRMED", "alice", now));
+    dao.replaceMeasures(analysisId, List.of(
+        new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Measure(
+            analysisId, "bugs", new java.math.BigDecimal("1"), null)));
+    assertEquals(1, dao.listMeasures(analysisId).size());
+    long gateId = dao.insertQualityGate(
+        projectId, java.util.UUID.randomUUID().toString(), "Gate",
+        List.of(Map.of("metric", "bugs", "operator", "GREATER_THAN", "value", "0")),
+        true, now);
+    assertTrue(dao.listQualityGates(projectId).stream().anyMatch(gate -> gate.id() == gateId));
+    assertTrue(dao.findDefaultQualityGate().isPresent());
+    assertTrue(dao.deleteProject(projectId));
+    assertTrue(dao.findAnalysis(analysisId).isEmpty());
+  }
+
 }
