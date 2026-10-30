@@ -454,7 +454,7 @@ Current format coverage:
 | R | yes | `PACKAGES.gz` | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
 | Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
-| Open VSX | yes | extension JSON view | `feat/staging-openvsx` |
+| Open VSX | yes | extension metadata JSON | `OpenVsxStagingContentAdapter` |
 | Hugging Face | n/a | n/a | proxy-only format, no hosted writes yet |
 
 Current limitations:

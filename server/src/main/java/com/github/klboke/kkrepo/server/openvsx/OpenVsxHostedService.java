@@ -265,6 +265,67 @@ public class OpenVsxHostedService {
         .toList();
   }
 
+  /** Serves registry metadata from live views plus staged extension projections. */
+  MavenResponse stagedGet(
+      RepositoryRuntime runtime,
+      OpenVsxPath path,
+      OpenVsxQuery query,
+      String baseUrl,
+      String repository,
+      List<ComponentRecord> staged,
+      boolean headOnly) {
+    requireHosted(runtime);
+    List<OpenVsxExtensionView> stagedViews = staged.stream()
+        .filter(component -> component.format()
+            == com.github.klboke.kkrepo.core.RepositoryFormat.OPENVSX)
+        .map(OpenVsxExtensionView::fromComponent)
+        .toList();
+    List<OpenVsxExtensionView> all = new ArrayList<>(views(runtime));
+    all.addAll(stagedViews);
+    if (path.kind() == OpenVsxPath.Kind.NAMESPACE) {
+      List<OpenVsxExtensionView> namespaceViews = all.stream()
+          .filter(view -> view.namespace().equalsIgnoreCase(path.namespace()))
+          .toList();
+      return metadata.json(
+          metadata.namespaceJson(path.namespace(), namespaceViews, baseUrl, repository), headOnly);
+    }
+    List<OpenVsxExtensionView> views = all.stream()
+        .filter(view -> view.namespace() != null
+            && view.namespace().equalsIgnoreCase(path.namespace()))
+        .filter(view -> view.name().equalsIgnoreCase(
+            com.github.klboke.kkrepo.protocol.openvsx.OpenVsxCoordinates.normalizeName(
+                path.extension())))
+        .toList();
+    return switch (path.kind()) {
+      case EXTENSION -> {
+        OpenVsxExtensionView selected = metadata.latest(views, query.targetPlatform());
+        if (selected == null) throw notFound(path.rawPath());
+        yield metadata.json(metadata.extensionJson(
+            baseUrl, repository, views, selected, query.targetPlatform()), headOnly);
+      }
+      case EXTENSION_VERSION, PLATFORM_VERSION -> {
+        OpenVsxExtensionView selected = metadata.findVersion(
+            views, path.version(), path.targetPlatform());
+        if (selected == null) throw notFound(path.rawPath());
+        yield metadata.json(metadata.extensionJson(
+            baseUrl, repository, views, selected, path.targetPlatform()), headOnly);
+      }
+      case PLATFORM_EXTENSION -> {
+        OpenVsxExtensionView selected = metadata.latest(views, path.targetPlatform());
+        if (selected == null) throw notFound(path.rawPath());
+        yield metadata.json(metadata.extensionJson(
+            baseUrl, repository, views, selected, path.targetPlatform()), headOnly);
+      }
+      case EXTENSION_VERSIONS, PLATFORM_VERSIONS -> metadata.json(
+          metadata.versionsJson(baseUrl, repository, views, query.offset(), query.size()),
+          headOnly);
+      case VERSION_REFERENCES, PLATFORM_VERSION_REFERENCES -> metadata.json(
+          metadata.versionReferencesJson(
+              baseUrl, repository, views, query.offset(), query.size()), headOnly);
+      default -> throw notFound(path.rawPath());
+    };
+  }
+
   List<OpenVsxExtensionView> views(
       RepositoryRuntime runtime, String namespace, String name) {
     return components.listByName(runtime.id(), OpenVsxCoordinates.normalizeName(name)).stream()
