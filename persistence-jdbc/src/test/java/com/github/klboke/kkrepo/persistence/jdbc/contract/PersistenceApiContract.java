@@ -30,6 +30,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDataMigrationDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryIndexRebuildDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityAuditDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityScanDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.StagingDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SwiftRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.TerraformRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetBlobRecord;
@@ -43,6 +44,10 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryDataMigrati
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityPrivilegeRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityRoleRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityUserRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingGroupChangeRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingPromotionRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingSessionRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.docker.DockerManifestRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.docker.DockerTagRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.docker.DockerUploadSessionRecord;
@@ -73,6 +78,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -86,6 +92,78 @@ import org.springframework.dao.DuplicateKeyException;
 
 /** Reusable black-box contract that every database backend must pass through the public API. */
 public abstract class PersistenceApiContract {
+  @Test
+  void routingRulesPersistBindingsAndRenamesAcrossStoreInstances() {
+    var rules = stores().routingRules();
+    long id = rules.insert("routing-contract", "Namespace policy", "BLOCK", List.of("/private/.*", "/internal/.*"));
+    assertEquals(List.of("/private/.*", "/internal/.*"), rules.findById(id).orElseThrow().matchers());
+    assertThrows(DuplicateKeyException.class,
+        () -> rules.insert("routing-contract", "", "ALLOW", List.of("/.*")));
+    long repository = stores().repositories().insert(new RepositoryRecord(null, "routing-proxy-contract",
+        com.github.klboke.kkrepo.core.RepositoryFormat.RAW,
+        com.github.klboke.kkrepo.core.RepositoryType.PROXY, "raw-proxy", true, null, id,
+        "https://example.com/", null, null, null, false, Map.of()));
+    assertEquals(List.of("routing-proxy-contract"), rules.repositoriesUsing(id));
+    assertTrue(rules.bindings().stream().anyMatch(binding -> binding.repositoryId() == repository
+        && binding.rule().id() == id));
+    inTransaction(() -> {
+      assertEquals(id, rules.lockByName("routing-contract").orElseThrow().id());
+      assertEquals(repository, stores().repositories().lockByName("routing-proxy-contract").orElseThrow().id());
+      rules.update(id, "routing-renamed-contract", "", "ALLOW", List.of("/public/.*"));
+      return null;
+    });
+    assertTrue(rules.findByName("routing-contract").isEmpty());
+    assertEquals("ALLOW", rules.findByName("routing-renamed-contract").orElseThrow().mode());
+    assertEquals(id, stores().repositories().findById(repository).orElseThrow().routingRuleId());
+    stores().repositories().deleteById(repository);
+    rules.delete(id);
+    assertTrue(rules.findById(id).isEmpty());
+  }
+
+  @Test
+  void repositoryLockPreservesRoutingBindingsCommittedAfterItsSnapshot() throws Exception {
+    var repositories = stores().repositories();
+    var rules = stores().routingRules();
+    String name = "routing-concurrent-contract";
+    long rule = rules.insert(name, "", "BLOCK", List.of("/private/.*"));
+    long repository = repositories.insert(new RepositoryRecord(null, name, RepositoryFormat.RAW,
+        RepositoryType.PROXY, "raw-proxy", true, null, null, "https://example.com/",
+        null, null, null, false, Map.of()));
+    CountDownLatch assigned = new CountDownLatch(1);
+    CountDownLatch snapshot = new CountDownLatch(1);
+    try (var executor = Executors.newFixedThreadPool(2)) {
+      var writer = executor.submit(() -> inTransaction(() -> {
+        rules.lockByName(name).orElseThrow();
+        repositories.lockByName(name).orElseThrow();
+        repositories.update(new RepositoryRecord(repository, name, RepositoryFormat.RAW,
+            RepositoryType.PROXY, "raw-proxy", true, null, rule, "https://example.com/",
+            null, null, null, false, Map.of()));
+        assigned.countDown();
+        awaitPolicyDeletionLatch(snapshot);
+        return null;
+      }));
+      assertTrue(assigned.await(10, java.util.concurrent.TimeUnit.SECONDS));
+      var updater = executor.submit(() -> inTransaction(() -> {
+        assertNull(repositories.findByName(name).orElseThrow().routingRuleId()); // Establish RR snapshot.
+        snapshot.countDown();
+        var current = repositories.lockByName(name).orElseThrow();
+        assertEquals(rule, current.routingRuleId());
+        repositories.update(new RepositoryRecord(repository, name, RepositoryFormat.RAW,
+            RepositoryType.PROXY, "raw-proxy", false, null, current.routingRuleId(),
+            "https://example.com/", null, null, null, false, Map.of()));
+        return null;
+      }));
+      writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+      updater.get(10, java.util.concurrent.TimeUnit.SECONDS);
+      assertEquals(rule, repositories.findByName(name).orElseThrow().routingRuleId());
+      assertFalse(repositories.findByName(name).orElseThrow().online());
+    } finally {
+      snapshot.countDown();
+      repositories.deleteById(repository);
+      rules.delete(rule);
+    }
+  }
+
   @Test
   void blobStoreCredentialsRoundTripFromStaticToEmptyAndNull() {
     var dao = stores().blobStores();
@@ -423,6 +501,11 @@ public abstract class PersistenceApiContract {
         "security_user_role",
         "spring_session",
         "spring_session_attributes",
+        "staging_item",
+        "staging_group_change",
+        "staging_promotion",
+        "staging_session",
+        "staging_session_repository",
         "swift_coordinate_lease",
         "swift_group_source_binding",
         "swift_manifest",
@@ -2379,6 +2462,13 @@ public abstract class PersistenceApiContract {
         0,
         10).isEmpty());
     assertTrue(scans.runSubjectExists(runId, repositoryId, assetId));
+    var projected = scans.listRunSubjectAssets(runId, 0, 0, 10, false);
+    assertEquals(scans.listRunSubjects(runId, 0, 0, 10),
+        projected.stream().map(SecurityScanDao.ScanRunSubjectAsset::subject).toList());
+    assertTrue(projected.stream().allMatch(row -> row.sourceRepositoryId().equals(repositoryId)));
+    var firstProjected = scans.listRunSubjectAssets(runId, 0, 0, 1, false).getFirst();
+    assertEquals(projected.subList(1, projected.size()), scans.listRunSubjectAssets(
+        runId, firstProjected.subject().repositoryId(), firstProjected.subject().assetId(), 10, false));
     assertEquals(
         List.of(repositoryId, groupRepositoryId),
         scans.listRunSubjects(runId, 0, 0, 10).stream()
@@ -3879,11 +3969,21 @@ public abstract class PersistenceApiContract {
     assertTrue(scans.listFindings(repositoryId, null, null, "no-match", 0, 10, true).isEmpty());
     assertEquals(List.of(other), scans.listRunSubjects(runs.get(1), 0, 0, 10, true)
         .stream().map(SecurityScanDao.ScanRunSubject::assetId).toList());
+    for (long run : runs) {
+      for (boolean currentOnly : List.of(false, true)) {
+        var projected = scans.listRunSubjectAssets(run, 0, 0, 10, currentOnly);
+        assertEquals(scans.listRunSubjects(run, 0, 0, 10, currentOnly),
+            projected.stream().map(SecurityScanDao.ScanRunSubjectAsset::subject).toList());
+        assertTrue(projected.stream().allMatch(row -> row.sourceRepositoryId().equals(
+            row.subject().assetId() == hidden ? hiddenId : repositoryId)));
+      }
+    }
     assertEquals(3, scans.countCurrentRunSubjects(runs.get(1), visible));
     assertEquals(1, scans.countCurrentRunSubjects(runs.get(1), visible, true));
     assertEquals(List.of(other), scans.listCurrentRunSubjects(runs.get(1), visible, 0, 0, 1, true)
         .stream().map(SecurityScanDao.ScanRunSubject::assetId).toList());
     assertTrue(scans.listCurrentRunSubjects(runs.get(1), visible, repositoryId, other, 1, true).isEmpty());
+    assertTrue(scans.listRunSubjectAssets(runs.get(1), repositoryId, other, 1, true).isEmpty());
 
     // Supersede the remaining visible association without changing its content generation.
     publishCurrentFindingState(scans, other, profile.id(), runs.get(2), ScanState.COMPLETE, now.plusSeconds(10));
@@ -5849,6 +5949,18 @@ public abstract class PersistenceApiContract {
         stores().repositories().listMembers(group).stream().map(RepositoryRecord::name).toList());
     assertEquals(List.of("maven-public"),
         stores().repositories().listGroupsContaining(first).stream().map(RepositoryRecord::name).toList());
+    var dao = stores().repositories();
+    assertEquals(Map.of(first, List.of(group), second, List.of(group), third, List.of(group)),
+        dao.findParentGroupIds(java.util.Arrays.asList(first, second, third, first, null)));
+    assertEquals(Map.of(), dao.findParentGroupIds(List.of()));
+    assertEquals(Map.of(), dao.findParentGroupIds(null));
+    assertEquals(Map.of(), dao.findParentGroupIds(java.util.Arrays.asList((Long) null)));
+    List<Long> batch = new ArrayList<>(java.util.stream.LongStream.rangeClosed(-600, -1).boxed().toList());
+    batch.add(first);
+    assertEquals(Map.of(first, List.of(group)), dao.findParentGroupIds(batch));
+    dao.clearMembers(group);
+    assertEquals(Map.of(), dao.findParentGroupIds(List.of(first, second, third)));
+
   }
 
   @Test
@@ -6271,6 +6383,134 @@ public abstract class PersistenceApiContract {
         now);
   }
 
+  @Test
+  void stagingSessionsItemsAndPromotionsRoundTripWithRevisionFence() {
+    StagingDao dao = stores().staging();
+    String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
+    long repositoryId = createRepository("staging-contract-" + suffix, RepositoryFormat.RAW);
+    long blobStoreId = stores().repositories().findById(repositoryId).orElseThrow().blobStoreId();
+    Instant now = Instant.now();
+    long sessionId = dao.insertSession(new StagingSessionRecord(
+        null,
+        "stage-" + suffix,
+        StagingDao.SESSION_OPEN,
+        0,
+        "Local",
+        "alice",
+        now,
+        now,
+        null,
+        null,
+        now.plus(Duration.ofDays(1)),
+        null,
+        Map.of("release", "r1")));
+    StagingSessionRecord session = dao.findSessionByName("stage-" + suffix).orElseThrow();
+    assertEquals(sessionId, session.id());
+    assertEquals(0, session.revision());
+    assertEquals(Map.of("release", "r1"), session.attributes());
+
+    assertFalse(dao.transitionSession(
+        sessionId, session.revision() + 1, List.of(StagingDao.SESSION_OPEN),
+        StagingDao.SESSION_FROZEN, now, null, null));
+    assertTrue(dao.transitionSession(
+        sessionId, session.revision(), List.of(StagingDao.SESSION_OPEN),
+        StagingDao.SESSION_FROZEN, now, null, null));
+    StagingSessionRecord frozen = dao.lockSession(sessionId).orElseThrow();
+    assertEquals(StagingDao.SESSION_FROZEN, frozen.state());
+    assertEquals(1, frozen.revision());
+
+    dao.addRepository(sessionId, repositoryId, RepositoryFormat.RAW.id());
+    dao.addRepository(sessionId, repositoryId, RepositoryFormat.RAW.id());
+    assertEquals(1, dao.listRepositories(sessionId).size());
+    assertTrue(dao.hasRepository(sessionId, repositoryId));
+
+    long blobId = stores().assets().insertBlob(
+        blob(blobStoreId, "staging/" + suffix, "staging-" + suffix, 7));
+    byte[] pathHash = PersistenceHashes.pathHash("docs/a.bin");
+    StagingItemRecord item = new StagingItemRecord(
+        null,
+        sessionId,
+        repositoryId,
+        RepositoryFormat.RAW,
+        "docs/a.bin",
+        pathHash,
+        StagingDao.ITEM_ADD,
+        StagingDao.ITEM_STAGED,
+        blobStoreId,
+        blobId,
+        "text/plain",
+        7L,
+        sha256Hex("staging-" + suffix),
+        "3".repeat(32),
+        "1".repeat(40),
+        "docs/a.bin",
+        null,
+        null,
+        Map.of("origin", "contract"),
+        now,
+        now);
+    OptionalLong inserted = inTransaction(() -> dao.tryInsertItem(item));
+    assertTrue(inserted.isPresent());
+    assertTrue(inTransaction(() -> dao.tryInsertItem(item)).isEmpty());
+    StagingItemRecord stored = dao.findItem(sessionId, repositoryId, pathHash).orElseThrow();
+    assertEquals(StagingDao.ITEM_ADD, stored.action());
+    assertEquals(blobId, stored.assetBlobId());
+    assertEquals(1, dao.updateItemStatus(stored.id(), StagingDao.ITEM_VALIDATED));
+    assertEquals(StagingDao.ITEM_VALIDATED,
+        dao.findItem(sessionId, repositoryId, pathHash).orElseThrow().status());
+
+    assertTrue(stores().blobReferences().retain("staging_item", stored.id(), blobId));
+    assertTrue(stores().blobReferences().isReferenced(blobId));
+    assertEquals(1, stores().blobReferences().releaseOwner("staging_item", stored.id()));
+
+    long promotionId = dao.insertPromotion(new StagingPromotionRecord(
+        null,
+        sessionId,
+        StagingDao.PROMOTION_PREFLIGHT,
+        null,
+        "a".repeat(64),
+        Map.of("promotable", true),
+        null,
+        null,
+        now));
+    StagingPromotionRecord promotion = dao.findLatestPromotion(sessionId).orElseThrow();
+    assertEquals(promotionId, promotion.id());
+    assertEquals(StagingDao.PROMOTION_PREFLIGHT, promotion.state());
+    assertEquals(1, dao.updatePromotion(
+        promotionId,
+        StagingDao.PROMOTION_SUCCEEDED,
+        "b".repeat(64),
+        Map.of("promotable", true),
+        now,
+        now));
+    StagingPromotionRecord succeeded = dao.findPromotion(promotionId).orElseThrow();
+    assertEquals(StagingDao.PROMOTION_SUCCEEDED, succeeded.state());
+    assertEquals("b".repeat(64), succeeded.manifestSha256());
+
+    assertEquals(1, dao.deleteItems(sessionId));
+    assertTrue(dao.listItems(sessionId).isEmpty());
+
+    long groupId = createRepository(
+        "staging-group-" + suffix, RepositoryFormat.RAW, RepositoryType.GROUP);
+    long memberId = createRepository(
+        "staging-member-" + suffix, RepositoryFormat.RAW, RepositoryType.HOSTED);
+    dao.upsertGroupChange(new StagingGroupChangeRecord(
+        null, sessionId, groupId, memberId, StagingDao.GROUP_ADD, 0,
+        StagingDao.GROUP_STAGED, now, now));
+    assertEquals(1, dao.listGroupChanges(sessionId).size());
+    StagingGroupChangeRecord groupChange =
+        dao.findGroupChange(sessionId, groupId, memberId).orElseThrow();
+    assertEquals(StagingDao.GROUP_ADD, groupChange.action());
+    assertEquals(1, dao.updateGroupChangeStatus(groupChange.id(), StagingDao.GROUP_VALIDATED));
+    assertEquals(StagingDao.GROUP_VALIDATED,
+        dao.findGroupChange(sessionId, groupId, memberId).orElseThrow().status());
+    assertEquals(1, dao.deleteGroupChange(sessionId, groupChange.id()));
+    assertTrue(dao.listGroupChanges(sessionId).isEmpty());
+
+    assertTrue(dao.removeRepository(sessionId, repositoryId));
+    assertFalse(dao.hasRepository(sessionId, repositoryId));
+  }
+
   private long createRepository(String name, RepositoryFormat format) {
     return createRepository(name, format, RepositoryType.HOSTED);
   }
@@ -6543,5 +6783,9 @@ public abstract class PersistenceApiContract {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  private static String sha256Hex(String value) {
+    return java.util.HexFormat.of().formatHex(sha256(value));
   }
 }

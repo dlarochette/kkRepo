@@ -11,6 +11,8 @@ import static org.mockito.Mockito.when;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryType;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.server.maven.MavenExceptions;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
@@ -25,6 +27,155 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 class RepositoryProtocolDispatcherTest {
+  @Test
+  void packageProtocolsMatchTheirCanonicalNamesWithoutLowercasingRawAssets() {
+    record Case(RepositoryFormat format, List<String> matchers, List<String> aliases, String allowed) {}
+    var cases = List.of(
+        new Case(RepositoryFormat.SWIFT, List.of("/private/.*"), List.of(
+            "PRIVATE/pkg/1.0.0.zip", "PRIVATE/pkg/1.0.0.json", "PriVaTe/PKG/1.0.0/Package.swift", "PR%49VATE/pkg.json"), "public/PKG/1.0.0.zip"),
+        new Case(RepositoryFormat.PUB, List.of("/api/packages/private", "/api/packages/private/versions/1.0.0",
+            "/api/archives/private-1.0.0.tar.gz", "/packages/private/versions/1.0.0.tar.gz", "/private/1.0.0/.*",
+            "/api/package-names", "/api/package-name-completion-data"), List.of("api/packages/private/",
+            "api/packages/private/versions/1.0.0/", "api/archives/private-1.0.0.tar.gz/",
+            "packages/private/versions/1.0.0.tar.gz/", "private/1.0.0/private-1.0.0.tar.gz/",
+            "private/1.0.0/version.json/", "api/package-names/", "api/package-name-completion-data/"), "api/packages/public"),
+        new Case(RepositoryFormat.CARGO, List.of("/api/v1/crates/private/.*", "/crates/private/.*", "/pr/iv/private", "/config.json", "/api/v1/crates"),
+            List.of("api/v1/crates/PRIVATE/1.0.0/download", "api/v1/crates/%20PRIVATE/1.0.0/download",
+                "crates/PRIVATE/1.0.0/PRIVATE-1.0.0.crate", "crates/PRIVATE/1.0.0/download", "pr/iv/private/", "config.json/", "api/v1/crates/"), "api/v1/crates/public/1.0.0/download"),
+        new Case(RepositoryFormat.NUGET, List.of("/v3-flatcontainer/private/.*", "/v3/registration5-semver[12]/private/.*"),
+            List.of("v3-flatcontainer/PRIVATE/index.json", "v3/registration5-semver1/PRIVATE/index.json",
+                "v3/registration5-semver2/PRIVATE/index.json"), "v3-flatcontainer/public/index.json"),
+        new Case(RepositoryFormat.R, List.of("/src/contrib/private_.*\\.tar\\.gz", "/src/contrib/PACKAGES"),
+            List.of("src/contrib/private_1.0.tar.gz/", "src/contrib/PACKAGES/"), "src/contrib/public_1.0.tar.gz"),
+        new Case(RepositoryFormat.APT, List.of("/dists/stable/Release"), List.of("dists/stable/Release/"), "dists/public/Release"),
+        new Case(RepositoryFormat.ALPINE, List.of("/v3.20/main/x86_64/APKINDEX.tar.gz"),
+            List.of("v3.20/main/x86_64/APKINDEX.tar.gz/"), "v3.20/public/x86_64/APKINDEX.tar.gz"),
+        new Case(RepositoryFormat.CONDA, List.of("/linux-64/repodata.json"), List.of("linux-64/repodata.json/"), "noarch/repodata.json"),
+        new Case(RepositoryFormat.YUM, List.of("/private.rpm"), List.of("private.rpm/"), "public.rpm"),
+        new Case(RepositoryFormat.RUBYGEMS, List.of("/gems/private-1.0.0.gem"), List.of("gems/private-1.0.0.gem/"), "gems/public-1.0.0.gem"),
+        new Case(RepositoryFormat.ANSIBLEGALAXY, List.of("/api/v3/collections/private/pkg/versions"),
+            List.of("api/v3/collections/private/pkg/versions/"), "api/v3/collections/public/pkg/versions/"),
+        new Case(RepositoryFormat.HELM, List.of("/index\\.yaml", "/private.tgz"),
+            List.of("INDEX.YAML", "iNdEx.YaMl"), "PRIVATE.tgz"),
+        new Case(RepositoryFormat.RAW, List.of("/private/.*"), List.of("private/file"), "PRIVATE/file"));
+    for (Case test : cases) {
+      RepositoryRuntime proxy = runtime(test.format(), RepositoryType.PROXY);
+      RepositoryRuntime group = runtime(test.format(), RepositoryType.GROUP).withMembers(List.of(proxy));
+      var rules = mock(RoutingRuleDao.class);
+      when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+          new RoutingRuleDao.Rule(1, "private", "", "BLOCK", test.matchers()))));
+      for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+        for (String alias : test.aliases()) {
+          RecordingHandler handler = handler(RepositoryProtocolRoute.anyPath(test.format(), RepositoryType.PROXY,
+              method, 0), ResponseEntity.ok().build());
+          var dispatcher = dispatcher(proxy, handler);
+          dispatcher.setRoutingPolicy(initializedPolicy(rules));
+          assertThrows(RepositoryRoutingPolicy.Blocked.class,
+              () -> dispatcher.dispatchRead("repo", request(method.name(), "/repository/repo/" + alias), method),
+              test.format() + " " + alias);
+          assertEquals(0, handler.invocations);
+          assertEquals(200, dispatcher.dispatchRead("repo",
+              request(method.name(), "/repository/repo/" + test.allowed()), method).getStatusCode().value());
+          assertEquals(200, dispatcher.dispatchRead("repo",
+              request(method.name(), "/repository/repo/unknown-path"), method).getStatusCode().value());
+          RecordingHandler grouped = handler(RepositoryProtocolRoute.anyPath(test.format(), RepositoryType.GROUP,
+              method, 0), ResponseEntity.ok().build());
+          var groupDispatcher = dispatcher(group, grouped);
+          groupDispatcher.setRoutingPolicy(initializedPolicy(rules));
+          groupDispatcher.dispatchRead("repo", request(method.name(), "/repository/repo/" + alias), method);
+          assertTrue(grouped.lastRequest.runtime().members().isEmpty(), test.format() + " " + alias);
+        }
+      }
+    }
+  }
+
+  @Test
+  void terraformRoutingUsesTheCredentialFreePathFromAuthentication() {
+    RepositoryRuntime proxy = runtime(RepositoryFormat.TERRAFORM, RepositoryType.PROXY);
+    RepositoryRuntime group = runtime(RepositoryFormat.TERRAFORM, RepositoryType.GROUP).withMembers(List.of(proxy));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+        new RoutingRuleDao.Rule(1, "private", "", "BLOCK", List.of("/v1/modules/private/.*")))));
+    for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+      for (RepositoryRuntime target : List.of(proxy, group)) {
+        RecordingHandler handler = handler(RepositoryProtocolRoute.anyPath(
+            RepositoryFormat.TERRAFORM, target.type(), method, 0), ResponseEntity.ok().build());
+        var dispatcher = dispatcher(target, handler);
+        dispatcher.setRoutingPolicy(initializedPolicy(rules));
+        var request = request(method.name(), "/repository/repo/v1/modules/url-token/private/m/aws/versions");
+        request.setAttribute(RepositorySecurityFilter.NORMALIZED_REPOSITORY_PATH_ATTRIBUTE,
+            "v1/modules/private/m/aws/versions");
+        if (target.isProxy()) {
+          assertThrows(RepositoryRoutingPolicy.Blocked.class,
+              () -> dispatcher.dispatchRead("repo", request, method));
+          assertEquals(0, handler.invocations);
+        } else {
+          dispatcher.dispatchRead("repo", request, method);
+          assertTrue(handler.lastRequest.runtime().members().isEmpty());
+        }
+      }
+    }
+  }
+
+  @Test
+  void npmRulesUseThePackageIdentityConsumedByHandlers() {
+    RepositoryRuntime proxy = runtime(RepositoryFormat.NPM, RepositoryType.PROXY);
+    RepositoryRuntime group = runtime(RepositoryFormat.NPM, RepositoryType.GROUP).withMembers(List.of(proxy));
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(new RoutingRuleDao.Binding(1,
+        new RoutingRuleDao.Rule(1, "private", "", "BLOCK", List.of("/private(?:/.*)?",
+            "/@scope/private(?:/.*)?", "/-/package/private/dist-tags(?:/.*)?")))));
+    for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+      for (String path : List.of("private", "%20private", "private%20", "private/",
+          "@scope%2Fprivate", "@scope/private%20", "%20private/1.0.0",
+          "private%20/-/private-1.0.0.tgz", "private%20/-rev/1",
+          "-/package/%20private/dist-tags", "-/package/private%20/dist-tags/latest")) {
+        RecordingHandler denied = handler(RepositoryProtocolRoute.anyPath(
+            RepositoryFormat.NPM, RepositoryType.PROXY, method, 0), ResponseEntity.ok().build());
+        var direct = dispatcher(proxy, denied);
+        direct.setRoutingPolicy(initializedPolicy(rules));
+        assertThrows(RepositoryRoutingPolicy.Blocked.class,
+            () -> direct.dispatchRead("repo", request(method.name(), "/repository/repo/" + path), method), path);
+        assertEquals(0, denied.invocations);
+        assertEquals(200, direct.dispatchRead("repo",
+            request(method.name(), "/repository/repo/public"), method).getStatusCode().value());
+        assertEquals(200, direct.dispatchRead("repo",
+            request(method.name(), "/repository/repo/%2520private"), method).getStatusCode().value());
+        assertEquals(200, direct.dispatchRead("repo",
+            request(method.name(), "/repository/repo/-/ping"), method).getStatusCode().value());
+        RecordingHandler filtered = handler(RepositoryProtocolRoute.anyPath(
+            RepositoryFormat.NPM, RepositoryType.GROUP, method, 0), ResponseEntity.ok().build());
+        var grouped = dispatcher(group, filtered);
+        grouped.setRoutingPolicy(initializedPolicy(rules));
+        grouped.dispatchRead("repo", request(method.name(), "/repository/repo/" + path), method);
+        assertTrue(filtered.lastRequest.runtime().members().isEmpty(), path);
+      }
+    }
+  }
+
+  @Test
+  void routingRulesPreserveSemicolonsConsumedByRawHandlers() {
+    RepositoryRuntime runtime = runtime(RepositoryFormat.RAW, RepositoryType.PROXY);
+    var rules = mock(RoutingRuleDao.class);
+    when(rules.bindings()).thenReturn(List.of(
+        new RoutingRuleDao.Binding(1,
+            new RoutingRuleDao.Rule(
+                1, "public", "", "ALLOW", List.of("/public/.*")))));
+    for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD)) {
+      RecordingHandler raw = handler(RepositoryProtocolRoute.anyPath(
+          RepositoryFormat.RAW, RepositoryType.PROXY, method, 0), ResponseEntity.ok().build());
+      var dispatcher = dispatcher(runtime, raw);
+      dispatcher.setRoutingPolicy(initializedPolicy(rules));
+      assertThrows(RepositoryRoutingPolicy.Blocked.class,
+          () -> dispatcher.dispatchRead("repo",
+              request(method.name(), "/repository/repo/public;private/a"), method));
+      assertEquals(0, raw.invocations);
+      assertEquals(200, dispatcher.dispatchRead("repo",
+          request(method.name(), "/repository/repo/public/a;b"), method).getStatusCode().value());
+      assertEquals("public/a;b", raw.lastRequest.path());
+    }
+  }
+
   @Test
   void exactPathWinsOverCatchAllForTheSameProtocol() throws Exception {
     RepositoryRuntime runtime = runtime(RepositoryFormat.HELM, RepositoryType.HOSTED);
@@ -304,5 +455,10 @@ class RepositoryProtocolDispatcherTest {
       lastRequest = request;
       return response;
     }
+  }
+  private static RepositoryRoutingPolicy initializedPolicy(RoutingRuleDao rules) {
+    var policy = new RepositoryRoutingPolicy(rules);
+    policy.initialize();
+    return policy;
   }
 }

@@ -320,6 +320,38 @@ public class AlpineService {
     return List.copyOf(counts);
   }
 
+  /** Serves a signed APKINDEX from live packages plus staged publications and deletions. */
+  MavenResponse stagedIndex(
+      RepositoryRuntime runtime,
+      AlpinePath path,
+      List<AlpineRegistryDao.PackageRecord> staged,
+      java.util.Set<String> deletedPaths,
+      boolean headOnly) {
+    requireAlpine(runtime);
+    String namespace = path.namespace();
+    if (namespace == null) {
+      throw new MavenExceptions.MavenNotFoundException(path.normalized());
+    }
+    String[] parts = namespace.split("/", -1);
+    AlpineRepositorySettings.Settings settings = repositorySettings.get(runtime);
+    AlpineSigningService.SigningMaterial key = signing.active(runtime);
+    Instant createdAt = Instant.now();
+    byte[] bytes = indexBuilder.render(settings, key, createdAt, visitor -> {
+      registry.visitPackages(runtime.id(), parts[0], parts[1], parts[2], row -> {
+        if (deletedPaths == null || !deletedPaths.contains(row.path())) {
+          visitor.accept(row);
+        }
+      });
+      staged.forEach(visitor);
+    });
+    String etag = '"' + sha256(bytes) + '"';
+    if (headOnly) {
+      return MavenResponse.noBody(200, bytes.length, AlpineMediaTypes.APK_INDEX, etag, null);
+    }
+    return MavenResponse.ok(
+        new ByteArrayInputStream(bytes), bytes.length, AlpineMediaTypes.APK_INDEX, etag, null);
+  }
+
   public MavenResponse publicKey(RepositoryRuntime runtime, boolean headOnly) {
     requireAlpine(runtime);
     AlpineSigningService.SigningMaterial key = signing.active(runtime);
@@ -458,7 +490,7 @@ public class AlpineService {
       if (current != null) {
         Optional<AlpineRegistryDao.GroupBinding> existing = registry.findGroupBinding(
             runtime.id(), path.namespace(), current.revision(), path.normalized());
-        if (existing.isPresent()) {
+        if (existing.isPresent() && runtime.containsMember(existing.orElseThrow().memberRepositoryId())) {
           return serveGroupPackage(existing.orElseThrow(), path, headOnly);
         }
       }
@@ -525,15 +557,18 @@ public class AlpineService {
       RepositoryRuntime runtime,
       AlpineRepositorySettings.Settings settings,
       String namespace) {
-    String memberFingerprint = memberFingerprint(runtime, namespace);
-    AlpineRegistryDao.Snapshot current = publishedSnapshots.find(runtime.id(), namespace).orElse(null);
-    if (current == null || !memberFingerprint.equals(current.manifest().get("@members"))) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+      String fingerprint = memberFingerprint(runtime, namespace);
+      AlpineRegistryDao.Snapshot current = publishedSnapshots.find(runtime.id(), namespace).orElse(null);
+      if (current != null && fingerprint.equals(current.manifest().get("@members"))) return current;
       registry.ensureSuite(runtime.id(), namespace, Instant.now());
       registry.markSuiteDirty(runtime.id(), namespace, Instant.now());
       publishPending(runtime, namespace, true);
     }
-    return publishedSnapshots.find(runtime.id(), namespace).orElseThrow(
-        () -> new MavenExceptions.MavenNotFoundException(namespace + "/APKINDEX.tar.gz"));
+    // Another request may publish a different routing-rule projection to the shared slot.
+    // Never return that snapshot: retrying the request is safer than serving denied members.
+    throw new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "Group snapshot changed concurrently");
   }
 
   private boolean publishPending(

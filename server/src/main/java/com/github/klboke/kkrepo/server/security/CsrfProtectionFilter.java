@@ -68,7 +68,9 @@ public class CsrfProtectionFilter extends OncePerRequestFilter {
     String uri = SecurityRequestPath.matchingPath(request);
     return uri.startsWith("/internal/")
         || legacyUi.csrfProtectedPath(uri)
-        || uri.startsWith("/service/rest/v1/security/");
+        || uri.startsWith("/service/rest/v1/security/")
+        || uri.equals("/service/rest/v1/routing-rules")
+        || uri.startsWith("/service/rest/v1/routing-rules/");
   }
 
   private boolean csrfTokenBootstrapPath(HttpServletRequest request) {
