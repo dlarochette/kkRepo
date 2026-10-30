@@ -74,8 +74,9 @@ class KkQualityApiControllerTest {
   void authorizesAgainstTheBindingWhenThePayloadNamesTheSameRepository() {
     when(dao.findProjectByKey("orders")).thenReturn(Optional.of(project(3L)));
 
-    controller.ingest(request("orders", "repo-a"), httpRequest);
+    var response = controller.ingest(request("orders", "repo-a"), httpRequest);
 
+    assertEquals(HttpStatus.OK, response.getStatusCode());
     verify(authorizer).requireIngest(subject, 3L);
     verify(ingestion).ingest(any(), eq(3L));
   }
