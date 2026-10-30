@@ -51,7 +51,7 @@ Configuration (environment or `application.yml`):
 | `kkrepo.kkg.dependency-track.project-version-template` | Version label for uploaded BOMs, default `{sourceId}` |
 | `kkrepo.kkg.dependency-track.poll-interval` | Finding/violation polling interval |
 | `kkrepo.kkg.dependency-track.poll-timeout` | Maximum time before a scan is marked `FAILED` |
-| `kkrepo.kkg.dependency-track.verify-tls` | TLS verification toggle for private CAs |
+| `kkrepo.kkg.dependency-track.verify-tls` | Relax certificate-chain trust **for the kkGuard client only**; hostname verification always stays on |
 
 Endpoints used:
 
@@ -62,6 +62,13 @@ Endpoints used:
 | Analysis state | `GET /api/v1/bom/cyclonedx/project/{uuid}` / project metrics |
 | Findings | `GET /api/v1/finding/project/{uuid}` |
 | Violations | `GET /api/v1/violation/project/{uuid}` |
+
+TLS notes: `verify-tls=false` installs a trust-all `SSLContext` on the kkGuard `HttpClient` only.
+The JDK has no per-client way to disable HTTPS endpoint identification, so hostname verification
+stays enabled: a certificate whose SAN does not match the configured host is still rejected. The
+client never sets `jdk.internal.httpclient.disableHostnameVerification`, because that switch is
+JVM-wide and would also disarm the Maven proxy and the Nexus migration client in the same process.
+Redirects are not followed, so the `X-Api-Key` header can never be replayed to another origin.
 
 Scan flow:
 

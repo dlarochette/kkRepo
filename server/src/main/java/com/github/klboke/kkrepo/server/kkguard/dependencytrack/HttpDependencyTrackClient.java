@@ -37,9 +37,6 @@ public final class HttpDependencyTrackClient implements DependencyTrackClient {
   private static final Logger log = LoggerFactory.getLogger(HttpDependencyTrackClient.class);
   private static final String API_KEY_HEADER = "X-Api-Key";
   private static final int MAX_ERROR_BODY = 256;
-  private static final String HOSTNAME_VERIFICATION_PROPERTY =
-      "jdk.internal.httpclient.disableHostnameVerification";
-
   private final URI baseUri;
   private final String apiKey;
   private final HttpClient httpClient;
@@ -380,18 +377,18 @@ public final class HttpDependencyTrackClient implements DependencyTrackClient {
   private static HttpClient buildHttpClient(KkGuardProperties.DependencyTrack settings) {
     HttpClient.Builder builder = HttpClient.newBuilder()
         .connectTimeout(settings.getConnectTimeout())
-        .followRedirects(HttpClient.Redirect.NORMAL);
+        .followRedirects(HttpClient.Redirect.NEVER);
     if (!settings.isVerifyTls()) {
+      // Relaxing trust for a private Dependency-Track instance must stay scoped to this client.
+      // The JDK forbids disabling HTTPS endpoint identification per client, so only the trust
+      // chain is relaxed here: hostname verification remains active, and this method never
+      // touches a JVM-wide system property (that would also disarm the Maven proxy and the Nexus
+      // migration client in the same process). A certificate whose SAN does not match the
+      // configured host still fails, which is deliberate.
       builder.sslContext(trustAllContext());
-      // The JDK HTTP client always enables HTTPS endpoint identification. Operators that disable
-      // TLS verification for a private Dependency-Track instance accept this process-wide switch;
-      // the default stays strict.
-      if (!"true".equalsIgnoreCase(System.getProperty(HOSTNAME_VERIFICATION_PROPERTY))) {
-        log.warn(
-            "kkrepo.kkg.dependency-track.verify-tls=false disables hostname verification for "
-                + "outbound java.net.http clients in this JVM");
-        System.setProperty(HOSTNAME_VERIFICATION_PROPERTY, "true");
-      }
+      log.warn(
+          "kkrepo.kkg.dependency-track.verify-tls=false trusts any certificate chain for the "
+              + "kkGuard Dependency-Track client only; hostname verification stays enabled");
     }
     return builder.build();
   }

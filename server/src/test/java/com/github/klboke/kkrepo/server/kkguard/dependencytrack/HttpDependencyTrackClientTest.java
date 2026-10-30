@@ -173,6 +173,36 @@ class HttpDependencyTrackClientTest {
     assertEquals("/api/v1/finding/project/x", stub.lastPath("GET"));
   }
 
+  @Test
+  void disablingTlsVerificationStaysScopedToTheKkGuardClient() {
+    String switchName = "jdk.internal.httpclient.disableHostnameVerification";
+    String previous = System.getProperty(switchName);
+    System.clearProperty(switchName);
+    var defaultVerifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier();
+    try {
+      KkGuardProperties.DependencyTrack settings = new KkGuardProperties.DependencyTrack();
+      settings.setUrl("https://dependency-track.internal.example");
+      settings.setApiKey(API_KEY);
+      settings.setVerifyTls(false);
+
+      DependencyTrackClient created = HttpDependencyTrackClient.create(settings, JSON);
+
+      assertTrue(created instanceof HttpDependencyTrackClient);
+      // P0 regression: the switch is JVM-wide, so touching it would also disarm the Maven proxy and
+      // the Nexus migration client running in the same process.
+      assertEquals(null, System.getProperty(switchName));
+      assertTrue(
+          defaultVerifier == javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier(),
+          "the JVM-wide default hostname verifier must not be replaced");
+    } finally {
+      if (previous == null) {
+        System.clearProperty(switchName);
+      } else {
+        System.setProperty(switchName, previous);
+      }
+    }
+  }
+
   private DependencyTrackClient client(Duration timeout) {
     KkGuardProperties.DependencyTrack settings = new KkGuardProperties.DependencyTrack();
     settings.setUrl(stub.baseUrl());
