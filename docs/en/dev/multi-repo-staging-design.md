@@ -417,7 +417,7 @@ to upload staged content without being able to publish it.
 
 | Area | Location |
 | --- | --- |
-| Schema | `V61__multi_repo_staging.sql` and `V62__staging_group_change.sql` (MySQL and PostgreSQL) |
+| Schema | `V61__multi_repo_staging.sql`, `V62__staging_group_change.sql` and `V63__arch_signing_key.sql` (MySQL and PostgreSQL) |
 | Durable state | `StagingDao`, `JdbcStagingDao`, `staging_session`, `staging_session_repository`, `staging_item`, `staging_promotion` |
 | Lifecycle | `server/staging/StagingService.java` |
 | Internal API | `server/staging/StagingController.java` |
@@ -453,7 +453,7 @@ Current format coverage:
 | Alpine | yes | signed `APKINDEX.tar.gz` | `AlpineStagingContentAdapter` |
 | R | yes | `PACKAGES.gz` | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
-| Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
+| Arch Linux | yes | `.db`/`.files` (+ signatures) | `ArchStagingContentAdapter` |
 | Open VSX | yes | extension JSON view | `feat/staging-openvsx` |
 | Hugging Face | n/a | n/a | proxy-only format, no hosted writes yet |
 

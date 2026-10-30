@@ -588,6 +588,28 @@
                 </div>
               </div>
             </fieldset>
+            <fieldset class="form-grid" id="repository-arch-fields" hidden>
+              <legend>Arch Linux / Pacman signing</legend>
+              <div class="full-width">
+                <div class="muted-row" id="repository-arch-status">No signing key configured.</div>
+                <div class="form-actions">
+                  <button class="create-button secondary" id="repository-arch-refresh-status" type="button">Refresh status</button>
+                  <button class="create-button secondary" id="repository-arch-download-key" type="button">Download public key</button>
+                </div>
+                <label class="full-width">
+                  <span>OpenPGP private signing key</span>
+                  <textarea id="repository-arch-private-key" rows="5" autocomplete="off" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+                </label>
+                <label>
+                  <span>Key passphrase</span>
+                  <input id="repository-arch-key-passphrase" type="password" autocomplete="new-password">
+                </label>
+                <div class="form-actions">
+                  <button class="create-button secondary" id="repository-arch-rotate-key" type="button">Import / rotate signing key</button>
+                  <button class="create-button secondary" id="repository-arch-generate-key" type="button">Generate / rotate signing key</button>
+                </div>
+              </div>
+            </fieldset>
             <fieldset class="form-grid" id="repository-group-fields" hidden>
               <legend>Group members</legend>
               <label class="full-width">
