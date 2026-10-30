@@ -246,6 +246,27 @@ public class ArchService {
     return routePackage(runtime, path, headOnly, new HashSet<>());
   }
 
+  /** Builds and signs a database from live components plus staged package projections. */
+  MavenResponse stagedDatabase(
+      RepositoryRuntime runtime,
+      ArchPath path,
+      List<com.github.klboke.kkrepo.persistence.jdbc.api.model.ComponentRecord> staged,
+      java.util.Set<String> deletedFilenames,
+      boolean headOnly) {
+    List<com.github.klboke.kkrepo.persistence.jdbc.api.model.ComponentRecord> merged =
+        new ArrayList<>(components.listByRepositoryId(runtime.id()));
+    if (deletedFilenames != null && !deletedFilenames.isEmpty()) {
+      merged.removeIf(component -> deletedFilenames.contains(
+          String.valueOf(component.attributes().get("archFileName"))));
+    }
+    merged.addAll(staged);
+    boolean files = path.kind() == ArchPath.Kind.FILES || path.kind() == ArchPath.Kind.FILES_TAR;
+    byte[] bytes = database.build(merged, files);
+    return path.databaseSignature()
+        ? signatureResponse(runtime, bytes, headOnly)
+        : databaseResponse(bytes, headOnly);
+  }
+
   private MavenResponse generated(
       RepositoryRuntime runtime, ArchPath path, boolean headOnly) {
     boolean files = path.kind() == ArchPath.Kind.FILES || path.kind() == ArchPath.Kind.FILES_TAR;

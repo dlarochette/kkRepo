@@ -1,14 +1,19 @@
 package com.github.klboke.kkrepo.server.arch;
 
 import com.github.klboke.kkrepo.core.RepositoryFormat;
+import com.github.klboke.kkrepo.persistence.jdbc.api.StagingDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.AssetBlobRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.ComponentRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.ComponentRecord;
+import com.github.klboke.kkrepo.persistence.jdbc.api.model.StagingItemRecord;
 import com.github.klboke.kkrepo.protocol.arch.ArchMediaTypes;
 import com.github.klboke.kkrepo.protocol.arch.ArchPath;
 import com.github.klboke.kkrepo.protocol.arch.ArchPathParser;
 import com.github.klboke.kkrepo.server.blob.BufferedUpload;
 import com.github.klboke.kkrepo.server.blob.TempBlobFiles;
 import com.github.klboke.kkrepo.server.maven.MavenExceptions;
+import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.raw.RawHostedService;
 import com.github.klboke.kkrepo.server.staging.StagingComponents;
@@ -16,9 +21,14 @@ import com.github.klboke.kkrepo.server.staging.StagingContentAdapter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 
 /**
@@ -36,14 +46,20 @@ final class ArchStagingContentAdapter implements StagingContentAdapter {
   private final RawHostedService hosted;
   private final ArchPackageInspector inspector;
   private final ArchAssetSupport assets;
+  private final ArchService archHosted;
+  private final StagingDao staging;
 
   ArchStagingContentAdapter(
       RawHostedService hosted,
       ArchPackageInspector inspector,
-      ArchAssetSupport assets) {
+      ArchAssetSupport assets,
+      ArchService archHosted,
+      StagingDao staging) {
     this.hosted = hosted;
     this.inspector = inspector;
     this.assets = assets;
+    this.archHosted = archHosted;
+    this.staging = staging;
   }
 
   @Override
@@ -59,10 +75,10 @@ final class ArchStagingContentAdapter implements StagingContentAdapter {
     } catch (IllegalArgumentException invalid) {
       return Optional.empty();
     }
-    if (path.kind() != ArchPath.Kind.PACKAGE && path.kind() != ArchPath.Kind.SIGNATURE) {
-      return Optional.empty();
+    if (path.generated() || path.databaseSignature()) {
+      return Optional.of(path.rawPath());
     }
-    if (path.databaseSignature()) {
+    if (path.kind() != ArchPath.Kind.PACKAGE && path.kind() != ArchPath.Kind.SIGNATURE) {
       return Optional.empty();
     }
     return Optional.of(path.fileName());
@@ -113,6 +129,43 @@ final class ArchStagingContentAdapter implements StagingContentAdapter {
     } finally {
       TempBlobFiles.deleteQuietly(temp);
     }
+  }
+
+  /**
+   * Serves {@code <repo>.db}/{@code .files} (and their signatures) from live components plus staged
+   * packages so pacman resolves a staged release before promotion.
+   */
+  @Override
+  public Optional<MavenResponse> generatedMetadata(
+      RepositoryRuntime runtime, long sessionId, String rawPath, boolean headOnly) {
+    ArchPath path;
+    try {
+      path = parser.parse(rawPath);
+    } catch (IllegalArgumentException invalid) {
+      return Optional.empty();
+    }
+    if (!path.generated() && !path.databaseSignature()) {
+      return Optional.empty();
+    }
+    List<ComponentRecord> staged = new ArrayList<>();
+    Set<String> deleted = new LinkedHashSet<>();
+    for (StagingItemRecord item : staging.listItems(sessionId)) {
+      if (item.repositoryId() != runtime.id() || item.format() != RepositoryFormat.ARCH) {
+        continue;
+      }
+      if ("DELETE".equals(item.action())) {
+        deleted.add(item.logicalPath());
+        continue;
+      }
+      StagingComponents.decode(
+              runtime.id(), RepositoryFormat.ARCH, item.attributes(),
+              item.createdAt() == null ? Instant.now() : item.createdAt())
+          .ifPresent(staged::add);
+    }
+    if (staged.isEmpty() && deleted.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(archHosted.stagedDatabase(runtime, path, staged, deleted, headOnly));
   }
 
   @Override
