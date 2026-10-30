@@ -33,11 +33,36 @@ CI / kkq-scanner ── SARIF + metadata ──> kkQuality (server/kkquality)
 | --- | --- |
 | `kkq_project` | SonarQube project key, name, visibility, external UUID |
 | `kkq_branch` | main/feature branches per project |
-| `kkq_analysis` | one SARIF submission: status, revision, SARIF digest, issue count |
+| `kkq_analysis` | one SARIF submission: status, revision, SARIF digest, issue count, new-issue count |
 | `kkq_rule` | normalized analyzer rule metadata |
-| `kkq_issue` | normalized issue: file, line, rule, severity, type, status, assignee |
+| `kkq_issue` | current state per `(project, branch, fingerprint)`: file, lines, rule, severity, type, status, resolution, assignee |
+| `kkq_issue_occurrence` | every `(issue, analysis)` observation, used for "new issues" and history |
 | `kkq_quality_gate` | gate conditions (metric/operator/threshold), optional project scope |
 | `kkq_measure` | per-analysis metric values (bugs, vulnerabilities, code smells, coverage, duplication) |
+
+Issues are stored as current state, not per analysis: `kkq_issue` holds one row per
+`(project, branch, fingerprint)` and `kkq_issue_occurrence` records each analysis that observed it.
+Re-running an analysis on an unchanged tree therefore never duplicates an issue, while "new issues
+versus the previous analysis" is a query over occurrences. An issue the next analysis does not
+report is closed with resolution `REMOVED` and reopens automatically if it comes back.
+
+## Permissions and tenancy
+
+`kkq_project.repository_id` optionally binds a project to a kkRepo repository. The binding is what
+makes the read API multi-tenant:
+
+| Caller | Read | Ingest |
+| --- | --- | --- |
+| Holds `nx-kkquality-read` | every project | — |
+| Holds `nx-kkquality-update` | — | every project |
+| Repository `read` on the bound repository | projects bound to it | — |
+| Repository `edit` on the bound repository | — | projects bound to it |
+
+The authorization filter is applied inside the SQL query (`listProjectsInRepositories`,
+`countProjectsInRepositories`) so a caller cannot receive a page it is not allowed to see, and the
+decision always goes through the shared, durable `SecurityManagementService` grants rather than a
+replica-local cache. Projects without a repository binding are only visible through the
+application-wide privilege.
 
 ## API compatibility
 
@@ -52,12 +77,21 @@ Read compatibility with the SonarQube Web API subset used by dashboards and CI:
 | Rules | `GET /api/rules/search` |
 
 Analysis ingestion is a kkRepo extension for the first release:
-`POST /api/kkquality/analyses` accepts a SARIF document plus `projectKey`, `branch`, `revision`
-and optional measures. A later phase can add the Sonar scanner submission protocol
-(`/api/ce/submit`) for unmodified `sonar-scanner` clients.
+`POST /api/kkquality/analyses` accepts `{"project","projectName","branch","revision","repository",
+"sarif"}` where `sarif` is a SARIF 2.1.0 document (object or JSON string). The response is the
+analysis status; `GET /api/kkquality/analyses/{analysisId}` and
+`GET /api/kkquality/analyses?project=...` expose status and history. Resubmitting a document whose
+digest matches the latest analysis of the branch is idempotent. A later phase can add the Sonar
+scanner submission protocol (`/api/ce/submit`) for unmodified `sonar-scanner` clients.
 
-Authentication uses kkRepo API keys/tokens; the compatibility layer maps Sonar-style permissions
-(`sonar:read`, `sonar:admin`) to kkRepo privileges.
+Authentication uses kkRepo API keys/tokens. The compatibility layer reuses the kkRepo privilege
+model (`nx-kkquality-read` / `nx-kkquality-update`) and repository-scoped permissions instead of
+introducing a parallel `sonar:*` namespace.
+
+Implemented read surface (SonarQube 8/9 shapes): `GET /api/projects/search`,
+`GET /api/issues/search`, `GET /api/measures/component`, `GET /api/qualitygates/project_status`,
+`GET /api/rules/search`. Project creation/deletion and issue transitions are not exposed yet;
+projects are created by ingestion.
 
 ## Quality gates
 
@@ -74,10 +108,11 @@ document.
 
 ## Delivery phases
 
-1. **Foundation** (this branch): `kkq_*` schema, `KkQualityDao`, contract tests.
-2. **SARIF ingestion**: analyzer-normalized rules/issues, blob storage, analysis status, issue
-   deduplication by fingerprint.
-3. **Sonar-compatible read API**: projects, issues, measures, rules and gate status.
+1. **Foundation** (done): `kkq_*` schema, `KkQualityDao`, contract tests.
+2. **SARIF ingestion** (done): analyzer-normalized rules/issues, blob storage, analysis status,
+   idempotent re-analysis, issue deduplication by fingerprint, current-state issues with occurrences.
+3. **Sonar-compatible read API** (done): projects, issues, measures, rules and gate status, with
+   repository-scoped authorization pushed into the query.
 4. **kkq-scanner**: container image/CLI that runs the open-source analyzers and uploads SARIF.
 5. **Operations**: admin UI, project history, retention, black-box compatibility tests.
 
