@@ -1,0 +1,367 @@
+package com.github.klboke.kkrepo.persistence.jdbc.internal;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao;
+import com.github.klboke.kkrepo.persistence.jdbc.internal.support.JdbcInserts;
+import com.github.klboke.kkrepo.persistence.jdbc.internal.support.JsonColumns;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public class JdbcKkGuardDao implements KkGuardDao {
+  private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
+  private final JdbcTemplate jdbc;
+  private final JsonColumns json;
+
+  public JdbcKkGuardDao(JdbcTemplate jdbc, JsonColumns json) {
+    this.jdbc = jdbc;
+    this.json = json;
+  }
+
+  private final RowMapper<Organization> organizations = (rs, n) -> new Organization(
+      rs.getLong("id"), rs.getString("external_id"), rs.getString("name"),
+      rs.getString("description"), instant(rs, "created_at"), instant(rs, "updated_at"));
+
+  private final RowMapper<Application> applications = (rs, n) -> new Application(
+      rs.getLong("id"), rs.getLong("organization_id"), rs.getString("external_id"),
+      rs.getString("public_id"), rs.getString("name"), nullableLong(rs, "repository_id"),
+      instant(rs, "created_at"), instant(rs, "updated_at"));
+
+  private final RowMapper<Scan> scans = (rs, n) -> new Scan(
+      rs.getLong("id"), rs.getLong("application_id"), rs.getString("scan_id"),
+      rs.getString("status"), rs.getString("stage"), rs.getString("source_id"),
+      rs.getString("sbom_sha256"), rs.getString("report_sha256"),
+      rs.getInt("component_count"), rs.getInt("violation_count"), rs.getString("error"),
+      instant(rs, "created_at"), instant(rs, "started_at"), instant(rs, "completed_at"));
+
+  private final RowMapper<ScanComponent> components = (rs, n) -> new ScanComponent(
+      rs.getLong("scan_id"), rs.getString("component_ref"), rs.getString("purl"),
+      rs.getString("name"), rs.getString("version"), rs.getString("license"),
+      rs.getString("highest_severity"));
+
+  private final RowMapper<Finding> findings = (rs, n) -> new Finding(
+      rs.getLong("scan_id"), rs.getString("component_ref"), rs.getString("vulnerability_id"),
+      rs.getString("severity"), rs.getBigDecimal("cvss_score"), rs.getString("source"),
+      rs.getString("description"), rs.getString("url"));
+
+  private final RowMapper<Policy> policies = (rs, n) -> new Policy(
+      rs.getLong("id"), rs.getLong("organization_id"), rs.getString("external_id"),
+      rs.getString("public_id"), rs.getString("name"), rs.getInt("threat_level"),
+      readMap(rs.getString("constraints_json")), instant(rs, "created_at"),
+      instant(rs, "updated_at"));
+
+  private final RowMapper<Violation> violations = (rs, n) -> new Violation(
+      rs.getLong("scan_id"), rs.getLong("policy_id"), rs.getString("component_ref"),
+      rs.getInt("threat_level"), readMap(rs.getString("constraint_json")));
+
+  @Override
+  public List<Organization> listOrganizations() {
+    return jdbc.query("SELECT * FROM kkg_organization ORDER BY name, id", organizations);
+  }
+
+  @Override
+  public Optional<Organization> findOrganization(long id) {
+    return jdbc.query("SELECT * FROM kkg_organization WHERE id = ?", organizations, id)
+        .stream().findFirst();
+  }
+
+  @Override
+  public Optional<Organization> findOrganizationByExternalId(String externalId) {
+    return jdbc.query("SELECT * FROM kkg_organization WHERE external_id = ?", organizations,
+        externalId).stream().findFirst();
+  }
+
+  @Override
+  public long insertOrganization(String externalId, String name, String description, Instant now) {
+    return JdbcInserts.insert(jdbc, """
+        INSERT INTO kkg_organization (external_id, name, description, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, ps -> {
+      ps.setString(1, externalId);
+      ps.setString(2, name);
+      ps.setString(3, description);
+      ps.setTimestamp(4, Timestamp.from(now));
+      ps.setTimestamp(5, Timestamp.from(now));
+    });
+  }
+
+  @Override
+  public boolean updateOrganization(long id, String name, String description, Instant now) {
+    return jdbc.update("""
+        UPDATE kkg_organization SET name = ?, description = ?, updated_at = ? WHERE id = ?
+        """, name, description, Timestamp.from(now), id) > 0;
+  }
+
+  @Override
+  public boolean deleteOrganization(long id) {
+    return jdbc.update("DELETE FROM kkg_organization WHERE id = ?", id) > 0;
+  }
+
+  @Override
+  public List<Application> listApplications() {
+    return jdbc.query("SELECT * FROM kkg_application ORDER BY name, id", applications);
+  }
+
+  @Override
+  public List<Application> listApplicationsByOrganization(long organizationId) {
+    return jdbc.query(
+        "SELECT * FROM kkg_application WHERE organization_id = ? ORDER BY name, id",
+        applications, organizationId);
+  }
+
+  @Override
+  public Optional<Application> findApplication(long id) {
+    return jdbc.query("SELECT * FROM kkg_application WHERE id = ?", applications, id)
+        .stream().findFirst();
+  }
+
+  @Override
+  public Optional<Application> findApplicationByExternalId(String externalId) {
+    return jdbc.query("SELECT * FROM kkg_application WHERE external_id = ?", applications,
+        externalId).stream().findFirst();
+  }
+
+  @Override
+  public Optional<Application> findApplicationByPublicId(String publicId) {
+    return jdbc.query("SELECT * FROM kkg_application WHERE public_id = ?", applications, publicId)
+        .stream().findFirst();
+  }
+
+  @Override
+  public long insertApplication(
+      long organizationId, String externalId, String publicId, String name, Long repositoryId,
+      Instant now) {
+    return JdbcInserts.insert(jdbc, """
+        INSERT INTO kkg_application
+          (organization_id, external_id, public_id, name, repository_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, ps -> {
+      ps.setLong(1, organizationId);
+      ps.setString(2, externalId);
+      ps.setString(3, publicId);
+      ps.setString(4, name);
+      if (repositoryId == null) ps.setNull(5, java.sql.Types.BIGINT);
+      else ps.setLong(5, repositoryId);
+      ps.setTimestamp(6, Timestamp.from(now));
+      ps.setTimestamp(7, Timestamp.from(now));
+    });
+  }
+
+  @Override
+  public boolean updateApplication(
+      long id, long organizationId, String externalId, String publicId, String name,
+      Long repositoryId, Instant now) {
+    return jdbc.update("""
+        UPDATE kkg_application
+        SET organization_id = ?, external_id = ?, public_id = ?, name = ?, repository_id = ?,
+          updated_at = ? WHERE id = ?
+        """, organizationId, externalId, publicId, name, repositoryId, Timestamp.from(now), id) > 0;
+  }
+
+  @Override
+  public boolean deleteApplication(long id) {
+    return jdbc.update("DELETE FROM kkg_application WHERE id = ?", id) > 0;
+  }
+
+  @Override
+  public long insertScan(Scan scan) {
+    return JdbcInserts.insert(jdbc, """
+        INSERT INTO kkg_scan
+          (application_id, scan_id, status, stage, source_id, sbom_sha256, report_sha256,
+           component_count, violation_count, error, created_at, started_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ps -> {
+      ps.setLong(1, scan.applicationId());
+      ps.setString(2, scan.scanId());
+      ps.setString(3, scan.status());
+      ps.setString(4, scan.stage());
+      ps.setString(5, scan.sourceId());
+      ps.setString(6, scan.sbomSha256());
+      ps.setString(7, scan.reportSha256());
+      ps.setInt(8, scan.componentCount());
+      ps.setInt(9, scan.violationCount());
+      ps.setString(10, scan.error());
+      ps.setTimestamp(11, Timestamp.from(
+          scan.createdAt() == null ? Instant.now() : scan.createdAt()));
+      bindInstant(ps, 12, scan.startedAt());
+      bindInstant(ps, 13, scan.completedAt());
+    });
+  }
+
+  @Override
+  public Optional<Scan> findScan(long id) {
+    return jdbc.query("SELECT * FROM kkg_scan WHERE id = ?", scans, id).stream().findFirst();
+  }
+
+  @Override
+  public Optional<Scan> findScanByScanId(String scanId) {
+    return jdbc.query("SELECT * FROM kkg_scan WHERE scan_id = ?", scans, scanId)
+        .stream().findFirst();
+  }
+
+  @Override
+  public Optional<Scan> lockScanByScanId(String scanId) {
+    return jdbc.query("SELECT * FROM kkg_scan WHERE scan_id = ? FOR UPDATE", scans, scanId)
+        .stream().findFirst();
+  }
+
+  @Override
+  public boolean updateScan(
+      long id, String status, String stage, String error, int componentCount,
+      int violationCount, String sbomSha256, String reportSha256,
+      Instant startedAt, Instant completedAt) {
+    return jdbc.update("""
+        UPDATE kkg_scan SET status = ?, stage = ?, error = ?, component_count = ?,
+          violation_count = ?, sbom_sha256 = COALESCE(?, sbom_sha256),
+          report_sha256 = COALESCE(?, report_sha256), started_at = COALESCE(?, started_at),
+          completed_at = COALESCE(?, completed_at)
+        WHERE id = ?
+        """, status, stage, error, componentCount, violationCount, sbomSha256, reportSha256,
+        startedAt == null ? null : Timestamp.from(startedAt),
+        completedAt == null ? null : Timestamp.from(completedAt), id) > 0;
+  }
+
+  @Override
+  public void replaceScanComponents(long scanId, List<ScanComponent> components) {
+    jdbc.update("DELETE FROM kkg_scan_component WHERE scan_id = ?", scanId);
+    for (ScanComponent component : components) {
+      jdbc.update("""
+          INSERT INTO kkg_scan_component
+            (scan_id, component_ref, purl, name, version, license, highest_severity)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          """, scanId, component.ref(), component.purl(), component.name(), component.version(),
+          component.license(), component.highestSeverity());
+    }
+  }
+
+  @Override
+  public void replaceScanFindings(long scanId, List<Finding> findings) {
+    jdbc.update("DELETE FROM kkg_scan_finding WHERE scan_id = ?", scanId);
+    for (Finding finding : findings) {
+      jdbc.update("""
+          INSERT INTO kkg_scan_finding
+            (scan_id, component_ref, vulnerability_id, severity, cvss_score, source, description, url)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          """, scanId, finding.componentRef(), finding.vulnerabilityId(), finding.severity(),
+          finding.cvssScore(), finding.source(), finding.description(), finding.url());
+    }
+  }
+
+  @Override
+  public List<ScanComponent> listScanComponents(long scanId) {
+    return jdbc.query(
+        "SELECT * FROM kkg_scan_component WHERE scan_id = ? ORDER BY component_ref",
+        components, scanId);
+  }
+
+  @Override
+  public List<Finding> listScanFindings(long scanId) {
+    return jdbc.query("""
+        SELECT * FROM kkg_scan_finding WHERE scan_id = ?
+        ORDER BY component_ref, vulnerability_id
+        """, findings, scanId);
+  }
+
+  @Override
+  public List<Policy> listPolicies(long organizationId) {
+    return jdbc.query("SELECT * FROM kkg_policy WHERE organization_id = ? ORDER BY name, id",
+        policies, organizationId);
+  }
+
+  @Override
+  public Optional<Policy> findPolicy(long id) {
+    return jdbc.query("SELECT * FROM kkg_policy WHERE id = ?", policies, id).stream().findFirst();
+  }
+
+  @Override
+  public Optional<Policy> findPolicyByPublicId(long organizationId, String publicId) {
+    return jdbc.query(
+        "SELECT * FROM kkg_policy WHERE organization_id = ? AND public_id = ?",
+        policies, organizationId, publicId).stream().findFirst();
+  }
+
+  @Override
+  public long insertPolicy(
+      long organizationId, String externalId, String publicId, String name, int threatLevel,
+      Map<String, Object> constraints, Instant now) {
+    return JdbcInserts.insert(jdbc, """
+        INSERT INTO kkg_policy
+          (organization_id, external_id, public_id, name, threat_level, constraints_json,
+           created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ps -> {
+      ps.setLong(1, organizationId);
+      ps.setString(2, externalId);
+      ps.setString(3, publicId);
+      ps.setString(4, name);
+      ps.setInt(5, threatLevel);
+      json.bindSerialized(ps, 6, json.writeValue(constraints));
+      ps.setTimestamp(7, Timestamp.from(now));
+      ps.setTimestamp(8, Timestamp.from(now));
+    });
+  }
+
+  @Override
+  public boolean updatePolicy(
+      long id, String externalId, String publicId, String name, int threatLevel,
+      Map<String, Object> constraints, Instant now) {
+    return jdbc.update("""
+        UPDATE kkg_policy SET external_id = ?, public_id = ?, name = ?, threat_level = ?,
+          constraints_json = ?, updated_at = ? WHERE id = ?
+        """, externalId, publicId, name, threatLevel,
+        json.serializedParameter(json.writeValue(constraints)), Timestamp.from(now), id) > 0;
+  }
+
+  @Override
+  public boolean deletePolicy(long id) {
+    return jdbc.update("DELETE FROM kkg_policy WHERE id = ?", id) > 0;
+  }
+
+  @Override
+  public void replaceViolations(long scanId, List<Violation> violations) {
+    jdbc.update("DELETE FROM kkg_violation WHERE scan_id = ?", scanId);
+    for (Violation violation : violations) {
+      jdbc.update("""
+          INSERT INTO kkg_violation
+            (scan_id, policy_id, component_ref, threat_level, constraint_json)
+          VALUES (?, ?, ?, ?, ?)
+          """, scanId, violation.policyId(), violation.componentRef(), violation.threatLevel(),
+          json.serializedParameter(json.writeValue(violation.constraint())));
+    }
+  }
+
+  @Override
+  public List<Violation> listViolations(long scanId) {
+    return jdbc.query(
+        "SELECT * FROM kkg_violation WHERE scan_id = ? ORDER BY threat_level DESC, id",
+        violations, scanId);
+  }
+
+  private Map<String, Object> readMap(String value) {
+    return value == null || value.isBlank() ? Map.of() : json.readValue(value, MAP);
+  }
+
+  private static Instant instant(ResultSet rs, String column) throws SQLException {
+    Timestamp value = rs.getTimestamp(column);
+    return value == null ? null : value.toInstant();
+  }
+
+  private static Long nullableLong(ResultSet rs, String column) throws SQLException {
+    long value = rs.getLong(column);
+    return rs.wasNull() ? null : value;
+  }
+
+  private static void bindInstant(java.sql.PreparedStatement ps, int index, Instant value)
+      throws SQLException {
+    if (value == null) ps.setNull(index, java.sql.Types.TIMESTAMP);
+    else ps.setTimestamp(index, Timestamp.from(value));
+  }
+}
