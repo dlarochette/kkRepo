@@ -166,6 +166,7 @@ const viewHashRoutes = {
   repositories: "#admin/repository/repositories",
   "cleanup-policies": CLEANUP_ROUTE_BASE,
   "content-selectors": "#admin/repository/content-selectors",
+  "routing-rules": "#admin/repository/routingrules",
   blobstores: "#admin/repository/blobstores",
   "docker-registry": "#admin/repository/docker",
   "security-users": "#admin/security/users",
@@ -190,6 +191,7 @@ const hashViewRoutes = {
   "#admin/repository/cleanup-policies": "cleanup-policies",
   "#admin/repository/cleanup": "cleanup-policies",
   "#admin/repository/content-selectors": "content-selectors",
+  "#admin/repository/routingrules": "routing-rules",
   "#admin/repository/blobstores": "blobstores",
   "#admin/repository/blob-stores": "blobstores",
   "#admin/repository/docker": "docker-registry",
@@ -2716,6 +2718,7 @@ function refreshRepositoryRecipeControls() {
   document.getElementById("repository-remote-ntlm-host-field").hidden = !ntlmSelected;
   document.getElementById("repository-outbound-proxy-fields").hidden = type !== "PROXY";
   document.getElementById("repository-group-fields").hidden = type !== "GROUP";
+  document.getElementById("repository-raw-fields").hidden = format !== "raw";
   document.getElementById("repository-docker-fields").hidden = format !== "docker";
   document.getElementById("repository-cargo-fields").hidden =
     format !== "cargo";
@@ -3136,6 +3139,9 @@ function repositoryFormPayload() {
     const minimumReleaseAge = document.getElementById("repository-minimum-release-age").value;
     const allowedRedirectHosts = document.getElementById("repository-allowed-redirect-hosts").value
       .split(",").map((value) => value.trim()).filter(Boolean);
+    if (!document.getElementById("repository-routing-rule").disabled) {
+      payload.routingRuleName = document.getElementById("repository-routing-rule").value;
+    }
     payload.proxy = {
       remoteUrl: document.getElementById("repository-remote-url").value.trim(),
       allowedRedirectHosts,
@@ -3181,6 +3187,9 @@ function repositoryFormPayload() {
   }
   if (recipe?.format === "yum" && type === "HOSTED") {
     payload.yum = { repodataDepth: Number(document.getElementById("repository-yum-depth").value) };
+  }
+  if (recipe?.format === "raw") {
+    payload.raw = { contentDisposition: document.getElementById("repository-raw-content-disposition").value };
   }
   if (recipe?.format === "docker") {
     const connectorPort = document.getElementById("repository-docker-connector-port").value;
@@ -3269,6 +3278,7 @@ function setRepositoryFormDefaults() {
   document.getElementById("repository-metadata-max-age").value = "1440";
   document.getElementById("repository-minimum-release-age").value = "0";
   document.getElementById("repository-auto-block").checked = true;
+  document.getElementById("repository-raw-content-disposition").value = "ATTACHMENT";
   document.getElementById("repository-docker-connector-enabled").checked = false;
   document.getElementById("repository-docker-connector-port").value = "";
   document.getElementById("repository-docker-connector-public-url").value = "";
@@ -3319,6 +3329,7 @@ function showCreateRepositoryForm() {
   repositoryFormMode = "create";
   editingRepositoryName = null;
   editingRepositoryBlobStoreName = null;
+  window.KkRoutingRules.loadOptions();
   document.getElementById("repository-form-title").textContent = "Create repository";
   document.getElementById("save-repository-button").textContent = "Create repository";
   document.getElementById("repository-name").disabled = false;
@@ -3343,6 +3354,7 @@ function showEditRepositoryForm(name) {
   }
   repositoryFormMode = "edit";
   editingRepositoryName = repo.name;
+  window.KkRoutingRules.loadOptions(repo.routingRuleName || "");
   editingRepositoryBlobStoreName = repo.blobStoreName || null;
   document.getElementById("repository-form-title").textContent = `Edit repository: ${repo.name}`;
   document.getElementById("save-repository-button").textContent = "Save changes";
@@ -3353,6 +3365,7 @@ function showEditRepositoryForm(name) {
   document.getElementById("repository-recipe").value = repo.recipe;
   document.getElementById("repository-online").checked = Boolean(repo.online);
   document.getElementById("repository-strict").checked = Boolean(repo.strictContentTypeValidation);
+  document.getElementById("repository-raw-content-disposition").value = repo.raw?.contentDisposition || "ATTACHMENT";
   refreshRepositoryBlobStoreOptions();
   if (repo.blobStoreName) {
     document.getElementById("repository-blobstore").value = repo.blobStoreName;
@@ -4909,6 +4922,7 @@ function renderMigrationResult(payload, title) {
   const blobStorePlans = preflight.blobStorePlans || [];
   const repositoriesToMigrate = preflight.repositoriesToMigrate || [];
   const groupRepositories = preflight.groupRepositories || [];
+  const routingRules = preflight.routingRules || {};
   const unsupported = preflight.unsupported || [];
   const proxyRisks = preflight.proxyRemoteRisks || [];
   const sourceProfile = preflight.sourceProfile || payload.sourceProfile || null;
@@ -4938,6 +4952,18 @@ function renderMigrationResult(payload, title) {
     ${renderMigrationPlan(migrationPlan)}
     ${renderMigrationPlanItems(migrationPlan)}
     ${renderMigrationList("Warnings", warnings)}
+    ${renderMigrationList("Routing rule migration blockers", routingRules.errors || [])}
+    ${renderMigrationSection("Routing Rules", renderCompactTable([
+      { label: "Name", value: (rule) => rule.name },
+      { label: "Mode", value: (rule) => rule.mode },
+      { label: "Matchers", value: (rule) => (rule.matchers || []).join("\n") },
+      { label: "Description", value: (rule) => rule.description }
+    ], routingRules.rules || [], "No routing rules found."))}
+    ${renderMigrationSection("Routing rule bindings", renderCompactTable([
+      { label: "Repository", value: (binding) => binding.repository },
+      { label: "Routing Rule", value: (binding) => binding.rule }
+    ], routingRules.bindings || []))}
+    ${routingRules.checksum ? renderMigrationSection("Routing policy checksum", renderMigrationHash(routingRules.checksum)) : ""}
     ${renderMigrationSection("Blob stores", renderCompactTable([
       { label: "Source", value: (store) => store.sourceName || "" },
       { label: "Source type", value: (store) => store.sourceType || "" },
@@ -5427,6 +5453,10 @@ function renderSecurityScanSeverity(severity) {
     </span>`;
 }
 
+function securityScanCanMutate(permission = "nexus:security-scanning:update") {
+  return securityScanState.summary?.deploymentEnabled === true && canAdmin(permission);
+}
+
 function applySecurityScanDeploymentState(enabled, options = {}) {
   const view = document.getElementById("security-scanning-view");
   const content = document.getElementById("security-scan-capability-content");
@@ -5459,6 +5489,11 @@ function applySecurityScanDeploymentState(enabled, options = {}) {
     }
   });
 
+  // Keep authorization separate from temporary deployment disabling. A refresh must
+  // never reveal a mutation control to a reader when the deployment becomes ready.
+  view.querySelectorAll("[data-scan-permission]").forEach((control) => {
+    control.hidden = !canAdmin(control.dataset.scanPermission);
+  });
   banner.hidden = available;
   banner.classList.toggle("is-pending", pending);
   banner.classList.toggle("is-disabled", !available && !pending);
@@ -5577,13 +5612,13 @@ function renderSecurityScanRuns() {
 function renderSecurityScanTasks() {
   document.getElementById("security-scan-task-table").innerHTML =
     securityScanState.tasks.map((task) => {
-      const retry = ["FAILED", "CANCELLED"].includes(task.status)
+      const retry = task.canManage === true && ["FAILED", "CANCELLED"].includes(task.status)
         ? `<button class="row-action security-scan-task-retry" data-id="${task.id}" type="button">retry</button>`
         : "";
-      const cancel = ["PENDING", "RETRY_WAIT", "RUNNING"].includes(task.status)
+      const cancel = task.canManage === true && ["PENDING", "RETRY_WAIT", "RUNNING"].includes(task.status)
         ? `<button class="row-action security-scan-task-cancel" data-id="${task.id}" type="button">cancel</button>`
         : "";
-      const rescan = task.assetId
+      const rescan = task.canRescan === true && task.assetId
         ? `<button class="row-action security-scan-asset-rescan" data-id="${task.assetId}" type="button">rescan</button>`
         : "";
       return `
@@ -5722,6 +5757,7 @@ function renderSecurityScanFindingWaiverStatus(finding) {
 }
 
 function renderSecurityScanFindingWaiverAction(finding) {
+  if (finding.canCreateWaiver !== true) return "";
   const targetCount = Number(finding.waiverTargetCount || 0);
   const waivedTargetCount = Number(finding.waivedTargetCount || 0);
   const fullyWaived = targetCount > 0 && waivedTargetCount >= targetCount;
@@ -5810,7 +5846,7 @@ function renderSecurityScanRepositories() {
           <td>${escapeHtml(config?.enforcementMode || "AUDIT")}</td>
           <td>${renderSecurityScanResultValidity(repository)}</td>
           <td>${renderSecurityScanExceptionHandling(repository)}</td>
-          <td class="actions-column"><button class="row-action security-scan-repository-edit" data-id="${repository.id}" type="button">configure</button></td>
+          <td class="actions-column">${repository.canConfigure === true ? `<button class="row-action security-scan-repository-edit" data-id="${repository.id}" type="button">configure</button>` : ""}</td>
         </tr>`;
     }).join("")
       || '<tr><td colspan="8" class="placeholder">No repositories are visible.</td></tr>';
@@ -5824,8 +5860,8 @@ function renderSecurityScanPolicies() {
       <td>${escapeHtml(policy.revision)}${typeof policy.latestRevision === "boolean" ? ` <span class="state-badge compact">${policy.latestRevision ? "Latest" : "Historical"}</span>` : ""}</td><td>${escapeHtml(policy.blockSeverity)}</td>
       <td>${policy.requireCompleteInventory ? "yes" : "no"}</td>
       <td>${escapeHtml(formatSecurityScanValidity(policy.maxResultAgeSeconds) || "No expiry")}</td>
-      <td class="actions-column"><button class="row-action security-scan-policy-edit" data-id="${escapeHtml(policy.id)}" type="button">edit</button>
-      <button class="row-action security-scan-policy-delete" data-id="${escapeHtml(policy.id)}" title="${policy.latestRevision === false ? "Historical revisions cannot be deleted individually. Delete the policy and all revisions from its latest revision." : "Delete this policy and all its revisions. The server checks the latest revision and references."}" ${policy.latestRevision === false ? "disabled" : ""} type="button">delete policy</button></td></tr>`).join("")
+      <td class="actions-column">${canAdmin("nexus:security-scanning:update") ? `<button class="row-action security-scan-policy-edit" data-id="${escapeHtml(policy.id)}" type="button">edit</button>
+      <button class="row-action security-scan-policy-delete" data-id="${escapeHtml(policy.id)}" title="${policy.latestRevision === false ? "Historical revisions cannot be deleted individually. Delete the policy and all revisions from its latest revision." : "Delete this policy and all its revisions. The server checks the latest revision and references."}" ${policy.latestRevision === false ? "disabled" : ""} type="button">delete policy</button>` : ""}</td></tr>`).join("")
       || '<tr><td colspan="6" class="placeholder">No policies are visible.</td></tr>';
 }
 
@@ -5840,7 +5876,7 @@ function renderSecurityScanWaivers() {
         <td>${escapeHtml(waiver.exception || (waiver.findingId ? `Finding #${waiver.findingId}` : "-"))}</td>
         <td>${escapeHtml(waiver.expiresAt ? formatDateTime(waiver.expiresAt) : "Never expires")}</td>
         <td>${escapeHtml(waiver.approvedBy || "-")}</td><td>${escapeHtml(waiver.reason)}</td>
-        <td class="actions-column"><button class="row-action security-scan-waiver-delete" data-id="${waiver.id}" type="button">delete</button></td></tr>`;
+        <td class="actions-column">${waiver.canDelete === true ? `<button class="row-action security-scan-waiver-delete" data-id="${waiver.id}" type="button">delete</button>` : ""}</td></tr>`;
     }).join("")
       || '<tr><td colspan="9" class="placeholder">No waivers are visible.</td></tr>';
 }
@@ -6190,7 +6226,7 @@ function updateSecurityScanRepositoryPolicyHelp() {
 
 async function editSecurityScanRepository(repositoryId) {
   const repository = securityScanState.repositories.find((item) => Number(item.id) === Number(repositoryId));
-  if (!repository) return;
+  if (!securityScanCanMutate() || repository?.canConfigure !== true) return;
   const request = ++securityScanState.repositoryEditRequest;
   let policies;
   try {
@@ -6246,6 +6282,9 @@ function optionalNumber(id) {
 
 async function saveSecurityScanRepository(event) {
   event.preventDefault();
+  const selected = securityScanState.repositories.find((item) =>
+    String(item.id) === String(document.getElementById("security-scan-repository-id").value));
+  if (!securityScanCanMutate() || selected?.canConfigure !== true) return;
   const form = document.getElementById("security-scan-repository-form");
   const repositoryId = Number(document.getElementById("security-scan-repository-id").value);
   const repositoryType = form.dataset.repositoryType;
@@ -6279,6 +6318,7 @@ async function saveSecurityScanRepository(event) {
 }
 
 function showCreateSecurityScanPolicyForm() {
+  if (!securityScanCanMutate()) return;
   securityScanPolicyFormMode = "create";
   editingSecurityScanPolicyId = null;
   editingSecurityScanPolicyEnabled = true;
@@ -6297,6 +6337,7 @@ function showCreateSecurityScanPolicyForm() {
 }
 
 function showEditSecurityScanPolicyForm(policyId) {
+  if (!securityScanCanMutate()) return;
   const policy = securityScanState.policies.find(
     (item) => Number(item.id) === Number(policyId));
   if (!policy) {
@@ -6342,6 +6383,7 @@ function hideSecurityScanPolicyForm() {
 
 async function saveSecurityScanPolicy(event) {
   event.preventDefault();
+  if (!securityScanCanMutate()) return;
   if (!validateRequiredFields(
       securityScanPolicyRequiredFields,
       { prefix: "Policy fields missing" })) return;
@@ -6378,6 +6420,7 @@ async function saveSecurityScanPolicy(event) {
 }
 
 async function deleteSecurityScanPolicy(policyId, button) {
+  if (!securityScanCanMutate()) return;
   if (button?.disabled) return;
   const policy = securityScanState.policies.find((item) => String(item.id) === String(policyId));
   // Older replicas omit revision metadata during rolling upgrades; the server still fences deletion.
@@ -6641,6 +6684,9 @@ function hideSecurityScanFindingDetail() {
 }
 
 async function showCreateSecurityScanWaiverForm(findingId) {
+  const finding = securityScanState.findings.find((item) => String(item.id) === String(findingId));
+  if (!securityScanCanMutate("nexus:security-scanning-waivers:create")
+      || finding?.canCreateWaiver !== true) return;
   const form = document.getElementById("security-scan-waiver-form");
   form.reset();
   clearRequiredFieldErrors(securityScanWaiverRequiredFields);
@@ -6689,6 +6735,7 @@ function hideSecurityScanWaiverForm() {
 
 async function createSecurityScanWaiver(event) {
   event.preventDefault();
+  if (!securityScanCanMutate("nexus:security-scanning-waivers:create")) return;
   if (!validateRequiredFields(
       securityScanWaiverRequiredFields,
       { prefix: "Waiver fields missing" })) return;
@@ -6743,6 +6790,8 @@ async function createSecurityScanWaiver(event) {
 }
 
 async function securityScanTaskAction(kind, id) {
+  const task = securityScanState.tasks.find((item) => String(item.id) === String(id));
+  if (!securityScanCanMutate() || task?.canManage !== true) return;
   try {
     const response = await fetch(`/internal/security/scanning/tasks/${id}/${kind}`, { method: "POST" });
     if (!response.ok) throw new Error(await responseErrorMessage(response));
@@ -6755,6 +6804,8 @@ async function securityScanTaskAction(kind, id) {
 }
 
 async function securityScanRescan(assetId) {
+  if (!securityScanCanMutate() || !securityScanState.tasks.some((task) =>
+      String(task.assetId) === String(assetId) && task.canRescan === true)) return;
   try {
     const response = await fetch(`/internal/security/scanning/assets/${assetId}/rescan`, { method: "POST" });
     if (!response.ok) throw new Error(await responseErrorMessage(response));
@@ -6767,6 +6818,9 @@ async function securityScanRescan(assetId) {
 }
 
 async function deleteSecurityScanWaiver(waiverId) {
+  const waiver = securityScanState.waivers.find((item) => String(item.id) === String(waiverId));
+  if (!securityScanCanMutate("nexus:security-scanning-waivers:delete")
+      || waiver?.canDelete !== true) return;
   if (!await window.kkrepoConfirmDelete({
     title: "Delete security scan waiver?",
     description: "The waived findings will be subject to the scan policy again, which may block downloads.",
@@ -8141,6 +8195,48 @@ async function deleteCleanupPolicy(policyId) {
   }
 }
 
+function permissionPartMatches(grantedPart, requestedPart, action = false) {
+  const normalize = (part) => {
+    const value = (part || "*").trim().toLowerCase();
+    if (!action) return value;
+    if (value === "create") return "add";
+    if (value === "update") return "edit";
+    return value === "all" ? "*" : value;
+  };
+  const requested = normalize(requestedPart);
+  return (grantedPart || "*").split(",").some((part) => {
+    // Backend ALL grants concrete actions, but only a literal * satisfies a wildcard request.
+    if (action && (requestedPart || "*").trim() === "*") return part.trim() === "*";
+    const normalized = normalize(part);
+    return normalized === "*" || normalized === requested;
+  });
+}
+
+function permissionMatches(granted, requested) {
+  const grantedParts = (granted || "").toLowerCase().split(":");
+  const requestedParts = (requested || "").toLowerCase().split(":");
+  const domain = requestedParts[1];
+  const actionIndex = ["repository-view", "repository-admin"].includes(domain) ? 4
+    : domain === "repository-content-selector" ? 5
+    : grantedParts[0] === "nexus" && requestedParts[0] === "nexus" ? 2 : -1;
+  const length = Math.max(grantedParts.length, requestedParts.length);
+  for (let index = 0; index < length; index += 1) {
+    if (!permissionPartMatches(grantedParts[index], requestedParts[index], index === actionIndex)) return false;
+  }
+  return true;
+}
+
+function canAdmin(permission) {
+  return currentAdminPermissions.some((granted) => permissionMatches(granted, permission));
+}
+
+function canAccessAdminView(view) {
+  if (canAdmin("nexus:*")) return view !== "loading";
+  if (view === "security-scanning") return canAdmin("nexus:security-scanning:read");
+  return view === "content-selectors" && ["read", "create", "update", "delete"]
+    .some((action) => canAdmin(`nexus:selectors:${action}`));
+}
+
 function switchView(view, options = {}) {
   if (!document.getElementById(`${view}-view`)) return false;
   if (!initialDataLoaded) {
@@ -8149,7 +8245,7 @@ function switchView(view, options = {}) {
     if (options.updateHash !== false) updateHashForView(view, Boolean(options.replaceHash));
     return false;
   }
-  if (!currentAdminPermissions.includes("nexus:*") && view !== "content-selectors") return false;
+  if (!canAccessAdminView(view)) return false;
   if (view !== "security-scanning") ++securityScanState.repositoryEditRequest;
   if (options.updateHash !== false) {
     updateHashForView(view, Boolean(options.replaceHash));
@@ -8174,6 +8270,7 @@ function switchView(view, options = {}) {
     loadCleanupPolicies();
   }
   if (view === "content-selectors") window.KkContentSelectors.load();
+  if (view === "routing-rules") window.KkRoutingRules.load();
   if (view === "docker-registry") loadDockerOperations();
   if (view === "security-users") loadSecurityUsers();
   if (view === "security-roles") loadSecurityRoles();
@@ -8198,7 +8295,7 @@ function switchView(view, options = {}) {
 function applyHashRoute() {
   if (!initialDataLoaded) return false;
   const view = viewFromHash();
-  if (!view) return false;
+  if (!view || !canAccessAdminView(view)) return false;
   if (view === "cleanup-policies"
       && document.getElementById("cleanup-policies-view").classList.contains("is-active")) {
     selectCleanupTab(
@@ -8770,15 +8867,20 @@ async function bootstrap() {
     document.getElementById("loading-view").textContent = "Failed to load session";
     return;
   }
-  if (!currentAdminPermissions.includes("nexus:*")) {
-    document.querySelectorAll(".side-item").forEach((item) => {
-      item.hidden = item.dataset.view !== "content-selectors";
-    });
-    document.querySelectorAll(".side-group").forEach((item) => {
-      item.hidden = item.dataset.sideGroup !== "repository";
-    });
+  document.querySelectorAll(".side-item").forEach((item) => {
+    item.hidden = !canAccessAdminView(item.dataset.view);
+  });
+  document.querySelectorAll(".side-group").forEach((group) => {
+    group.hidden = !Array.from(sideGroupItems(group.dataset.sideGroup)?.querySelectorAll(".side-item") || [])
+      .some((item) => !item.hidden);
+  });
+  if (!canAdmin("nexus:*")) {
     initialDataLoaded = true;
-    switchView("content-selectors", { replaceHash: true });
+    if (!applyHashRoute()) {
+      const fallback = ["security-scanning", "content-selectors"].find(canAccessAdminView);
+      if (fallback) switchView(fallback, { replaceHash: true });
+      else document.getElementById("loading-view").textContent = "No administration views are available.";
+    }
     return;
   }
   const recipesPromise = Promise.all([loadRepositoryRecipes(), loadConanManifestDefaults()]);

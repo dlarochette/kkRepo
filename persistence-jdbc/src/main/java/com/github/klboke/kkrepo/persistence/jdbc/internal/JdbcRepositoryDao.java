@@ -138,6 +138,12 @@ public class JdbcRepositoryDao implements com.github.klboke.kkrepo.persistence.j
   }
 
   @Override
+  public Optional<RepositoryRecord> lockByName(String name) {
+    return jdbcTemplate.query("SELECT * FROM repository WHERE name = ? FOR UPDATE", rowMapper, name)
+        .stream().findFirst();
+  }
+
+  @Override
   public Optional<Instant> findUpdatedAt(long id) {
     return jdbcTemplate.query(
         "SELECT updated_at FROM repository WHERE id = ?",
@@ -280,6 +286,28 @@ public class JdbcRepositoryDao implements com.github.klboke.kkrepo.persistence.j
         "SELECT name FROM repository WHERE blob_store_id = ? ORDER BY name",
         String.class,
         blobStoreId);
+  }
+
+  @Override
+  public Map<Long, List<Long>> findParentGroupIds(List<Long> memberRepositoryIds) {
+    if (memberRepositoryIds == null || memberRepositoryIds.isEmpty()) return Map.of();
+    List<Long> ids = memberRepositoryIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+    Map<Long, List<Long>> parents = new LinkedHashMap<>();
+    for (int offset = 0; offset < ids.size(); offset += 500) {
+      List<Long> batch = ids.subList(offset, Math.min(offset + 500, ids.size()));
+      String placeholders = String.join(",", java.util.Collections.nCopies(batch.size(), "?"));
+      jdbcTemplate.query("""
+          SELECT rm.member_repository_id, r.id AS group_id
+          FROM repository_member rm
+          JOIN repository r ON r.id = rm.repository_id
+          WHERE rm.member_repository_id IN (%s)
+          ORDER BY rm.member_repository_id, r.name
+          """.formatted(placeholders), rs -> {
+            parents.computeIfAbsent(rs.getLong("member_repository_id"), ignored -> new ArrayList<>())
+                .add(rs.getLong("group_id"));
+          }, batch.toArray());
+    }
+    return parents;
   }
 
   public boolean hasComponents(long repositoryId) {

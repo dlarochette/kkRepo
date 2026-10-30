@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.maven;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.core.BlobReference;
 import com.github.klboke.kkrepo.core.BlobStorage;
 import com.github.klboke.kkrepo.persistence.jdbc.api.AssetDao;
@@ -176,6 +177,9 @@ public class MavenGroupService {
     if (cacheController != null && cacheInfo.isPresent()) {
       return !cacheController.isStale(group.id(), NexusCacheType.CONTENT, cacheInfo.get(), ttl, now);
     }
+    if (RepositoryRoutingPolicy.filtersGroup(group.id())) {
+      return false; // Legacy group cache entries lack a policy-scoped generation.
+    }
     if (snapshot.lastUpdatedAt() == null) {
       return false;
     }
@@ -195,8 +199,12 @@ public class MavenGroupService {
           path.path(),
           () -> AssetMetadataCache.Loaded.from(
               assetDao.findAssetByPath(member.id(), path.path()), assetDao));
-      memberSnapshot.ifPresent(snapshot ->
-          writer.referenceCachedAsset(group, path, snapshot, "group", member.name()));
+      // Another request may replace a nested group's row after dispatch selected its response.
+      // Only promote a source snapshot valid for this request's nested-group policy generation;
+      // never stamp bytes selected under another projection with the outer group's current token.
+      memberSnapshot.filter(snapshot -> !member.isGroup()
+              || isGroupCacheFresh(member, path, snapshot, Instant.now()))
+          .ifPresent(snapshot -> writer.referenceCachedAsset(group, path, snapshot, "group", member.name()));
     } catch (RuntimeException e) {
       log.warn("Failed writing Maven group cache for group {} member {} path {}",
           group.name(), member.name(), path.path(), e);
@@ -262,6 +270,9 @@ public class MavenGroupService {
     Optional<NexusLikeCacheInfo> cacheInfo = NexusLikeCacheInfo.fromAttributes(snapshot.attributes());
     if (cacheController != null && cacheInfo.isPresent()) {
       return !cacheController.isStale(group.id(), NexusCacheType.METADATA, cacheInfo.get(), ttl, now);
+    }
+    if (RepositoryRoutingPolicy.filtersGroup(group.id())) {
+      return false; // Legacy group cache entries lack a policy-scoped generation.
     }
     if (snapshot.lastUpdatedAt() == null) {
       return false;

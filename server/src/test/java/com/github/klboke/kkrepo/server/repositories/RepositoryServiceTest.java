@@ -8,6 +8,9 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -21,6 +24,8 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.ConanRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.CondaRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.CleanupPolicyDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
+import com.github.klboke.kkrepo.server.routingrules.RoutingRuleService;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.BlobStoreRecord;
@@ -56,6 +61,47 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class RepositoryServiceTest {
+  @Test
+  void partialUpdatesPreserveTheBindingFromTheLockedRepositoryVersion() {
+    for (boolean concurrentAssignment : List.of(true, false)) {
+      RepositoryRecord base = mavenProxyWithOutboundProxy("old-pass");
+      RepositoryRecord observed = withRoutingRule(base, concurrentAssignment ? null : 19L);
+      RepositoryRecord committed = withRoutingRule(base, concurrentAssignment ? 19L : null);
+      StubRepositoryDao repositories = spy(new StubRepositoryDao(observed));
+      doReturn(Optional.of(committed)).when(repositories).lockByName(base.name());
+      RepositoryService service = service(repositories);
+      service.setRoutingRules(new RoutingRuleService(
+          mock(RoutingRuleDao.class)));
+      service.update(base.name(), new UpdateCommand(false, null, null, null, null, null, null, null, null));
+      assertEquals(committed.routingRuleId(), repositories.updated.routingRuleId());
+      assertFalse(repositories.updated.online());
+    }
+  }
+
+  private static RepositoryRecord withRoutingRule(RepositoryRecord row, Long ruleId) {
+    return new RepositoryRecord(row.id(), row.name(), row.format(), row.type(), row.recipeName(),
+        row.online(), row.blobStoreId(), ruleId, row.proxyRemoteUrl(), row.versionPolicy(),
+        row.layoutPolicy(), row.writePolicy(), row.strictContentTypeValidation(), row.attributes());
+  }
+
+  @Test
+  void explicitRoutingAssignmentsLockTheRuleBeforeTheRepository() {
+    RepositoryRecord base = mavenProxyWithOutboundProxy("old-pass");
+    StubRepositoryDao repositories = spy(new StubRepositoryDao(base));
+    var rules = mock(RoutingRuleDao.class);
+    var rule = new RoutingRuleDao.Rule(
+        19, "private", "", "BLOCK", List.of("/private/.*"));
+    when(rules.lockByName("private")).thenReturn(Optional.of(rule));
+    RepositoryService service = service(repositories);
+    service.setRoutingRules(new RoutingRuleService(rules));
+    service.update(base.name(), new UpdateCommand(null, null, null, null, null, null, null,
+        null, null, null, null, null, null, null, "private"));
+    var locks = inOrder(rules, repositories);
+    locks.verify(rules).lockByName("private");
+    locks.verify(repositories).lockByName(base.name());
+    assertEquals(19L, repositories.updated.routingRuleId());
+  }
+
 
   @Test
   void standaloneStarRoundTripsAcrossReplicasAndPartialUpdatesAndCanBeRemoved() throws Exception {

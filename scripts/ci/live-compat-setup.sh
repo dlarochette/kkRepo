@@ -212,6 +212,30 @@ ensure_r_migration_upstream() {
   echo "[compat] controlled R migration upstream is ready: $R_MIGRATION_UPSTREAM_URL"
 }
 
+configure_nexus_routing_rule_ssrf_allowlist() {
+  NEXUS_URL="$NEXUS_URL" NEXUS_AUTH="$NEXUS_AUTH" python3 - <<'PY_ROUTING'
+import base64, json, os, urllib.request, urllib.error
+url = os.environ["NEXUS_URL"] + "/service/rest/v1/security/ssrf-protection"
+headers = {"Authorization": "Basic " + base64.b64encode(os.environ["NEXUS_AUTH"].encode()).decode(),
+           "Content-Type": "application/json"}
+try:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as response:
+        config = json.load(response)
+except urllib.error.HTTPError as error:
+    if error.code == 404:  # Older Nexus does not have the SSRF configuration API.
+        raise SystemExit(0)
+    raise
+allowed = list(config.get("allowedDomains") or [])
+if "localhost" not in allowed:
+    allowed.append("localhost")
+    config["allowedDomains"] = allowed
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method="PUT",
+            data=json.dumps(config).encode()), timeout=20) as response:
+        response.read()
+print("[compat] Nexus permits the controlled routing-rule loopback fixture")
+PY_ROUTING
+}
+
 configure_nexus_r_migration_ssrf_allowlist() {
   if [[ "$R_MIGRATION_ENABLED" != "true" ]]; then
     return 0
@@ -1469,6 +1493,7 @@ configure_nexus_anonymous_access
 configure_nexus_conan_realm
 ensure_r_migration_upstream
 configure_nexus_r_migration_ssrf_allowlist
+configure_nexus_routing_rule_ssrf_allowlist
 if [[ -n "${ANSIBLE_COMPAT_UPSTREAM_REPOSITORY:-}" ]]; then
   NEXUS_URL="$NEXUS_URL" NEXUS_AUTH="$NEXUS_AUTH" python3 "$SCRIPT_DIR/prepare-ansible-upstream.py"
 fi

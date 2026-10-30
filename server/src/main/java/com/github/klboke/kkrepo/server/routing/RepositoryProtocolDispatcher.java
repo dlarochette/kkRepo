@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.routing;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.core.RepositoryType;
@@ -30,6 +31,13 @@ public class RepositoryProtocolDispatcher {
           .reversed()
           .thenComparingInt(route -> route.route().order())
           .thenComparing(route -> route.handler().getClass().getName());
+
+  private RepositoryRoutingPolicy routingPolicy;
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setRoutingPolicy(RepositoryRoutingPolicy policy) {
+    this.routingPolicy = policy;
+  }
 
   private final RepositoryRuntimeRegistry runtimes;
   private final Map<RouteKey, List<RegisteredRoute>> routes;
@@ -87,6 +95,16 @@ public class RepositoryProtocolDispatcher {
       MultipartFile multipartFile) throws IOException, ServletException {
     RepositoryRuntime runtime = resolveRuntime(repositoryName, request);
     String path = routePath(repositoryName, request);
+    if (routingPolicy != null) {
+      if (request.getAttribute(RepositorySecurityFilter.NORMALIZED_REPOSITORY_PATH_ATTRIBUTE) instanceof String) {
+        runtime = routingPolicy.prepareCanonical(runtime, path, request);
+      } else {
+        runtime = switch (runtime.format()) {
+          case HELM, NPM, SWIFT, PUB, CARGO, NUGET, R, APT, ALPINE, CONDA, YUM, RUBYGEMS, ANSIBLEGALAXY -> routingPolicy.prepare(runtime, path, request);
+          default -> routingPolicy.prepareRepository(runtime, request);
+        };
+      }
+    }
     RouteKey key = new RouteKey(runtime.format(), runtime.type(), method);
     for (RegisteredRoute candidate : routes.getOrDefault(key, List.of())) {
       if (!candidate.route().matches(runtime, method, path)) continue;

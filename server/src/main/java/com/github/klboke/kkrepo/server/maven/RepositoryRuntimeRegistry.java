@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.maven;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.cache.LocalCache;
@@ -51,6 +52,17 @@ public class RepositoryRuntimeRegistry {
   // Must match RepositoryCatalogCache.CATALOG_NAME — a single repository mutation broadcast both
   // refreshes the catalog snapshot and flushes these cached runtimes on every replica.
   private static final String REPOSITORY_CATALOG_NAME = "repository";
+
+  private RepositoryRoutingPolicy routingPolicy;
+
+  @Autowired
+  void setRoutingPolicy(RepositoryRoutingPolicy policy) {
+    this.routingPolicy = policy;
+  }
+
+  private Optional<RepositoryRuntime> project(Optional<RepositoryRuntime> runtime) {
+    return routingPolicy == null ? runtime : runtime.map(routingPolicy::project);
+  }
 
   private final RepositoryDao repositoryDao;
   private final Duration ttl;
@@ -128,6 +140,10 @@ public class RepositoryRuntimeRegistry {
   }
 
   public Optional<RepositoryRuntime> resolve(String name) {
+    return project(resolveUnfiltered(name));
+  }
+
+  private Optional<RepositoryRuntime> resolveUnfiltered(String name) {
     if (ttl.isZero() || cache == null) {
       return resolveFresh(name);
     }
@@ -164,7 +180,8 @@ public class RepositoryRuntimeRegistry {
   @Transactional(readOnly = true)
   public Optional<RepositoryRuntime> resolveFreshById(long id) {
     return repositoryDao.findById(id)
-        .map(record -> toRuntime(record, new HashSet<>()));
+        .map(record -> toRuntime(record, new HashSet<>()))
+        .map(runtime -> routingPolicy == null ? runtime : routingPolicy.project(runtime));
   }
 
   /**
@@ -178,7 +195,7 @@ public class RepositoryRuntimeRegistry {
       RepositoryRecord cachedRecord = localRecordsById.getIfPresent(record.id());
       Optional<RepositoryRuntime> cachedRuntime = localRuntimes.getIfPresent(record.name());
       if (record.equals(cachedRecord) && cachedRuntime != null) {
-        return cachedRuntime;
+        return project(cachedRuntime);
       }
     }
     RepositoryRuntime runtime = toRuntime(record, new HashSet<>());
@@ -186,7 +203,7 @@ public class RepositoryRuntimeRegistry {
       cacheRecord(record);
       writeCached(record.name(), Optional.of(runtime));
     }
-    return Optional.of(runtime);
+    return project(Optional.of(runtime));
   }
 
   /** Name-keyed record lookup used by request filters before protocol dispatch. */

@@ -29,6 +29,17 @@ class NexusRestClientTest {
   private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
   @Test
+  void readsRoutingPoliciesAndDoesNotTreatAnUnavailableApiAsAnEmptyInventory() throws Exception {
+    FakeNexus nexus = new FakeNexus(true);
+    nexus.routingRules = List.of(Map.of("name", "internal", "description", "", "mode", "BLOCK", "matchers", List.of("/private/.*")));
+    assertEquals(nexus.routingRules, client(nexus).readInventory().routingRules());
+    nexus.routingStatus = 403;
+    assertTrue(client(nexus).readInventory().routingRulesError().contains("403"));
+    nexus.routingStatus = 404;
+    assertTrue(client(nexus).readInventory().routingRulesError().contains("404"));
+  }
+
+  @Test
   void reportsWarningWhenSourceScriptApiDoesNotExposePasswordHashes() throws Exception {
     FakeNexus nexus = new FakeNexus(false);
     NexusInventory inventory = client(nexus).readInventory();
@@ -390,6 +401,8 @@ class NexusRestClientTest {
   }
 
   private static final class FakeNexus {
+    private int routingStatus = 200;
+    private List<Map<String, Object>> routingRules = List.of();
     private final boolean scriptApiEnabled;
     private boolean scriptDeleted;
     private String usersPath;
@@ -416,6 +429,9 @@ class NexusRestClientTest {
           return empty(204);
         }
         return json(200, Map.of("version", "3.77.2-02"));
+      }
+      if ("GET".equals(method) && "/service/rest/v1/routing-rules".equals(path)) {
+        return json(routingStatus, routingRules);
       }
       if ("GET".equals(method) && "/service/rest/v1/repositories".equals(path)) {
         return json(200, List.of());
