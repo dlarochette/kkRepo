@@ -32,9 +32,9 @@ public class JdbcKkGuardDao implements KkGuardDao {
       rs.getString("description"), instant(rs, "created_at"), instant(rs, "updated_at"));
 
   private final RowMapper<Application> applications = (rs, n) -> new Application(
-      rs.getLong("id"), rs.getLong("organization_id"), rs.getString("external_id"),
+      rs.getLong("id"), rs.getLong("organization_id"), trimmed(rs, "external_id"),
       rs.getString("public_id"), rs.getString("name"), nullableLong(rs, "repository_id"),
-      rs.getString("contact_user_name"), rs.getString("dt_project_uuid"),
+      rs.getString("contact_user_name"), trimmed(rs, "dt_project_uuid"),
       rs.getString("dt_project_name"), instant(rs, "created_at"), instant(rs, "updated_at"));
 
   private final RowMapper<Scan> scans = (rs, n) -> new Scan(
@@ -42,7 +42,7 @@ public class JdbcKkGuardDao implements KkGuardDao {
       rs.getString("status"), rs.getString("stage"), rs.getString("source_id"),
       rs.getString("sbom_sha256"), rs.getString("report_sha256"),
       rs.getInt("component_count"), rs.getInt("violation_count"), rs.getString("error"),
-      rs.getString("dt_project_uuid"), rs.getString("dt_bom_token"), rs.getInt("attempts"),
+      trimmed(rs, "dt_project_uuid"), trimmed(rs, "dt_bom_token"), rs.getInt("attempts"),
       rs.getString("lease_owner"), instant(rs, "lease_expires_at"),
       instant(rs, "submitted_at"), instant(rs, "last_polled_at"),
       instant(rs, "created_at"), instant(rs, "started_at"), instant(rs, "completed_at"));
@@ -502,6 +502,12 @@ public class JdbcKkGuardDao implements KkGuardDao {
   private static Long nullableLong(ResultSet rs, String column) throws SQLException {
     long value = rs.getLong(column);
     return rs.wasNull() ? null : value;
+  }
+
+  /** CHAR columns are right-padded by PostgreSQL; callers need the logical value. */
+  private static String trimmed(ResultSet rs, String column) throws SQLException {
+    String value = rs.getString(column);
+    return value == null ? null : value.stripTrailing();
   }
 
   private static void bindInstant(java.sql.PreparedStatement ps, int index, Instant value)
