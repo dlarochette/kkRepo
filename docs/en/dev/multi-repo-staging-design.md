@@ -453,7 +453,7 @@ Current format coverage:
 | Alpine | yes | signed `APKINDEX.tar.gz` | `AlpineStagingContentAdapter` |
 | R | yes | `PACKAGES.gz` | `RStagingContentAdapter` |
 | Docker / OCI | yes | tag listing merged with staged manifests | `DockerStagingContentAdapter` |
-| Arch Linux | yes | `.db`/`.files` view | `feat/staging-arch` |
+| Arch Linux | yes | `.db`/`.files` (+ signatures) | `ArchStagingContentAdapter` |
 | Open VSX | yes | extension JSON view | `feat/staging-openvsx` |
 | Hugging Face | n/a | n/a | proxy-only format, no hosted writes yet |
 
