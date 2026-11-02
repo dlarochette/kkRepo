@@ -96,6 +96,8 @@ public class ManagementAuditFilter extends OncePerRequestFilter {
     }
     String uri = SecurityRequestPath.matchingPath(request);
     return uri.startsWith("/internal/")
+        || uri.equals("/service/rest/v1/routing-rules")
+        || uri.startsWith("/service/rest/v1/routing-rules/")
         || uri.startsWith("/service/rest/v1/security/")
         || uri.startsWith("/service/rest/v1/assets/")
         || legacyUi.auditedMutationPath(uri);

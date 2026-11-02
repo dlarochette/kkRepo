@@ -28,6 +28,7 @@ import com.github.klboke.kkrepo.migration.nexus.security.NexusSecurityMigrationW
 import com.github.klboke.kkrepo.persistence.jdbc.api.BlobStoreDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.MigrationJobDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SecurityDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.TerraformRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.BlobStoreRecord;
@@ -65,6 +66,7 @@ public class NexusApiMigrationService {
   private final MigrationJobDao migrationJobDao;
   private final NexusSecurityMigrationWriter securityWriter;
   private final TerraformRegistryDao terraformRegistry;
+  private final NexusRoutingRuleMigration routingRules;
   // The server controller constructs this service directly, so transaction annotations would not
   // be intercepted by a Spring proxy. Keep the atomic migration boundary explicit instead.
   private final TransactionTemplate migrationTransaction;
@@ -108,6 +110,15 @@ public class NexusApiMigrationService {
       NexusSecurityMigrationWriter securityWriter,
       TerraformRegistryDao terraformRegistry,
       PlatformTransactionManager transactionManager) {
+    this(objectMapper, blobStoreDao, repositoryDao, securityDao, migrationJobDao, securityWriter,
+        terraformRegistry, transactionManager, null);
+  }
+
+  public NexusApiMigrationService(
+      ObjectMapper objectMapper, BlobStoreDao blobStoreDao, RepositoryDao repositoryDao,
+      SecurityDao securityDao, MigrationJobDao migrationJobDao, NexusSecurityMigrationWriter securityWriter,
+      TerraformRegistryDao terraformRegistry, PlatformTransactionManager transactionManager, RoutingRuleDao ruleDao) {
+    this.routingRules = new NexusRoutingRuleMigration(ruleDao, repositoryDao);
     this.objectMapper = objectMapper;
     this.blobStoreDao = blobStoreDao;
     this.repositoryDao = repositoryDao;
@@ -305,6 +316,8 @@ public class NexusApiMigrationService {
         }
       }
     });
+    NexusRoutingRuleMigration.Plan routingPlan = routingPlan(inventory);
+    warnings.addAll(routingPlan.errors());
     return new NexusMigrationPreflight(
         inventory.blobStores().size(),
         inventory.repositories().size(),
@@ -320,7 +333,7 @@ public class NexusApiMigrationService {
         missingPasswordUsers,
         warnings,
         sourceProfile,
-        migrationPlan);
+        migrationPlan, routingPlan);
   }
 
   private List<BlobStoreMigrationPlan> blobStorePlans(
@@ -427,11 +440,21 @@ public class NexusApiMigrationService {
     return null;
   }
 
+  private NexusRoutingRuleMigration.Plan routingPlan(NexusInventory inventory) {
+    return routingRules.plan(inventory, inventory.repositories().stream()
+        .filter(NexusApiMigrationService::migratableRepository).toList());
+  }
+
   ConfigMigrationCounts migrateConfig(NexusInventory inventory, NexusMigrationRequest request) {
+    NexusRoutingRuleMigration.Plan routingPlan = routingPlan(inventory);
+    routingPlan.requireValid();
     ConfigMigrationCounts counts = configCountsOnly(inventory);
     if (request.dryRun()) {
       return counts;
     }
+    Map<String, Long> ruleIds = routingRules.apply(routingPlan);
+    Map<String, String> assignments = new LinkedHashMap<>();
+    routingPlan.bindings().forEach(binding -> assignments.put(binding.repository(), binding.rule()));
     Map<String, BlobStoreRecord> targetBlobStores = migrateBlobStores(inventory, request.targetBlobStore());
     Map<String, RepositoryRecord> migrated = new LinkedHashMap<>();
     List<RepositoryDocument> supported = inventory.repositories().stream()
@@ -439,9 +462,23 @@ public class NexusApiMigrationService {
         .sorted(Comparator.comparing((RepositoryDocument document) ->
             repositoryTypeEnum(document) == RepositoryType.GROUP ? 1 : 0))
         .toList();
+    // Serialize target policy checks with concurrent administration on other replicas.
+    Map<String, RepositoryRecord> existingTargets = new LinkedHashMap<>();
+    for (String name : supported.stream().map(NexusApiMigrationService::repositoryName).sorted().toList()) {
+      repositoryDao.lockByName(name).ifPresent(existing -> {
+        Long incomingRule = ruleIds.get(assignments.get(name));
+        if (existing.routingRuleId() != null && !existing.routingRuleId().equals(incomingRule)) {
+          throw new IllegalArgumentException("Target repository routing rule changed during migration: " + name);
+        }
+        existingTargets.put(name, existing);
+      });
+    }
     for (RepositoryDocument document : supported) {
-      RepositoryRecord record = repositoryRecord(document, targetBlobStores);
-      RepositoryRecord stored = repositoryDao.upsertByName(record);
+      RepositoryRecord record = repositoryRecord(document, targetBlobStores, ruleIds.get(assignments.get(repositoryName(document))));
+      // A concurrent insert must fail the unique constraint, rather than overwrite its policy.
+      RepositoryRecord stored = existingTargets.containsKey(record.name())
+          ? repositoryDao.upsertByName(record)
+          : repositoryDao.findById(repositoryDao.insert(record)).orElseThrow();
       migrated.put(record.name(), stored);
       migrateTerraformSigningKey(document, stored);
     }
@@ -460,6 +497,8 @@ public class NexusApiMigrationService {
           .toList();
       repositoryDao.replaceMembers(group.id(), memberIds);
     }
+    List<String> failures = routingRules.validate(routingPlan);
+    if (!failures.isEmpty()) throw new IllegalStateException(String.join("; ", failures));
     return counts;
   }
 
@@ -482,7 +521,8 @@ public class NexusApiMigrationService {
       }
     }
     return new ConfigMigrationCounts(
-        inventory.blobStores().size(), supported, unsupported, proxy, group);
+        inventory.blobStores().size(), supported, unsupported, proxy, group,
+        inventory.routingRules().size(), routingPlan(inventory).bindings().size());
   }
 
   private Map<String, BlobStoreRecord> migrateBlobStores(
@@ -525,7 +565,7 @@ public class NexusApiMigrationService {
 
   private RepositoryRecord repositoryRecord(
       RepositoryDocument document,
-      Map<String, BlobStoreRecord> targetBlobStores) {
+      Map<String, BlobStoreRecord> targetBlobStores, Long routingRuleId) {
     RepositoryRecipe recipe = NexusRepositorySupport.recipe(repositoryFormat(document), repositoryType(document))
         .orElseThrow();
     String sourceBlobStoreName = sourceBlobStoreName(document);
@@ -574,7 +614,7 @@ public class NexusApiMigrationService {
         recipe.name(),
         online,
         targetBlobStore == null ? null : targetBlobStore.id(),
-        null,
+        routingRuleId,
         proxyRemoteUrl(document, recipe),
         mavenSetting(document, "versionPolicy"),
         mavenSetting(document, "layoutPolicy"),
@@ -700,6 +740,10 @@ public class NexusApiMigrationService {
       checks.add(validateBlobStores(inventory, request.targetBlobStore()));
       checks.add(validateRepositories(inventory));
       checks.add(validateGroupMembers(inventory));
+      List<String> routingFailures = routingRules.validate(preflight.routingRules());
+      checks.add(new ValidationCheck("routing-rules", "rules and repository bindings",
+          routingFailures.isEmpty() ? "PASS" : "FAIL",
+          "Source policy checksum: " + preflight.routingRules().checksum(), routingFailures));
       checks.add(validateSecurityObjects(inventory.securityExport()));
       checks.add(validateLocalUserPasswordHashes(passwordResetRequired));
     }
@@ -1719,9 +1763,11 @@ public class NexusApiMigrationService {
       List<String> passwordResetRequiredUsers,
       List<String> warnings,
       NexusSourceProfile sourceProfile,
-      NexusMigrationPlan migrationPlan) {
+      NexusMigrationPlan migrationPlan,
+      NexusRoutingRuleMigration.Plan routingRules) {
 
     public NexusMigrationPreflight {
+      routingRules = routingRules == null ? new NexusRoutingRuleMigration.Plan(List.of(), List.of(), List.of(), "") : routingRules;
       blobStorePlans = blobStorePlans == null ? List.of() : List.copyOf(blobStorePlans);
       repositoriesToMigrate = repositoriesToMigrate == null ? List.of() : List.copyOf(repositoriesToMigrate);
       unsupported = unsupported == null ? List.of() : List.copyOf(unsupported);
@@ -1738,6 +1784,18 @@ public class NexusApiMigrationService {
       migrationPlan = migrationPlan == null
           ? new MigrationPlanBuilder().build(sourceProfile, new MigrationScope(List.of(), true, false))
           : migrationPlan;
+    }
+
+    public NexusMigrationPreflight(
+        int blobStores, int repositories, int supportedRepositories, int unsupportedRepositories,
+        List<BlobStoreMigrationPlan> blobStorePlans, List<RepositoryMigrationPlan> repositoriesToMigrate,
+        List<UnsupportedRepository> unsupported, List<GroupRepositoryMigrationPlan> groupRepositories,
+        List<ProxyRemoteRisk> proxyRemoteRisks, NexusSecurityPreflight security, int users,
+        List<String> passwordResetRequiredUsers, List<String> warnings,
+        NexusSourceProfile sourceProfile, NexusMigrationPlan migrationPlan) {
+      this(blobStores, repositories, supportedRepositories, unsupportedRepositories, blobStorePlans,
+          repositoriesToMigrate, unsupported, groupRepositories, proxyRemoteRisks, security, users,
+          passwordResetRequiredUsers, warnings, sourceProfile, migrationPlan, null);
     }
 
     public NexusMigrationPreflight(
@@ -1924,7 +1982,13 @@ public class NexusApiMigrationService {
       int repositories,
       int unsupportedRepositories,
       int proxyRepositories,
-      int groupRepositories) {
+      int groupRepositories,
+      int routingRules,
+      int routingRuleBindings) {
+    public ConfigMigrationCounts(int blobStores, int repositories, int unsupportedRepositories,
+        int proxyRepositories, int groupRepositories) {
+      this(blobStores, repositories, unsupportedRepositories, proxyRepositories, groupRepositories, 0, 0);
+    }
   }
 
   public record NexusMigrationResult(

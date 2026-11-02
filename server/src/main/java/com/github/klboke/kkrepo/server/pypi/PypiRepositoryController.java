@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.pypi;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.server.blob.TempBlobFiles;
 import com.github.klboke.kkrepo.server.http.ConditionalResponses;
@@ -22,6 +23,13 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 @RestController
 @RequestMapping("${kkrepo.compatibility.repository-url-prefix:/repository}/{name}")
 public class PypiRepositoryController {
+  private RepositoryRoutingPolicy routingPolicy;
+
+  @org.springframework.beans.factory.annotation.Autowired
+  void setRoutingPolicy(RepositoryRoutingPolicy policy) {
+    this.routingPolicy = policy;
+  }
+
   private final RepositoryRuntimeRegistry registry;
   private final PypiHostedService hosted;
   private final PypiProxyService proxy;
@@ -46,14 +54,14 @@ public class PypiRepositoryController {
   public ResponseEntity<StreamingResponseBody> getRootIndex(
       @PathVariable("name") String name,
       HttpServletRequest request) {
-    return toBodyResponse(dispatchRoot(resolve(name), false), request);
+    return toBodyResponse(dispatchRoot(resolve(name, PypiPaths.INDEX_PREFIX, request), false), request);
   }
 
   @RequestMapping(value = {"/simple", "/simple/"}, method = RequestMethod.HEAD)
   public ResponseEntity<Void> headRootIndex(
       @PathVariable("name") String name,
       HttpServletRequest request) {
-    return toHeadResponse(dispatchRoot(resolve(name), true), request);
+    return toHeadResponse(dispatchRoot(resolve(name, PypiPaths.INDEX_PREFIX, request), true), request);
   }
 
   @GetMapping({"/simple/{project}", "/simple/{project}/"})
@@ -61,7 +69,7 @@ public class PypiRepositoryController {
       @PathVariable("name") String name,
       @PathVariable("project") String project,
       HttpServletRequest request) {
-    return toBodyResponse(dispatchIndex(resolve(name), project, false), request);
+    return toBodyResponse(dispatchIndex(resolve(name, PypiPaths.indexPath(project), request), project, false), request);
   }
 
   @RequestMapping(value = {"/simple/{project}", "/simple/{project}/"}, method = RequestMethod.HEAD)
@@ -69,7 +77,7 @@ public class PypiRepositoryController {
       @PathVariable("name") String name,
       @PathVariable("project") String project,
       HttpServletRequest request) {
-    return toHeadResponse(dispatchIndex(resolve(name), project, true), request);
+    return toHeadResponse(dispatchIndex(resolve(name, PypiPaths.indexPath(project), request), project, true), request);
   }
 
   private PypiResponse dispatchRoot(RepositoryRuntime runtime, boolean headOnly) {
@@ -86,6 +94,11 @@ public class PypiRepositoryController {
       case PROXY -> proxy.getIndex(runtime, project, headOnly);
       case GROUP -> group.getIndex(runtime, project, headOnly);
     };
+  }
+
+  private RepositoryRuntime resolve(String name, String path, HttpServletRequest request) {
+    RepositoryRuntime runtime = resolve(name);
+    return routingPolicy == null ? runtime : routingPolicy.prepareCanonical(runtime, path, request);
   }
 
   private RepositoryRuntime resolveHosted(String name) {

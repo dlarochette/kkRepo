@@ -749,6 +749,8 @@ jobs:
       NEXUS_COMPAT_IMAGE: sonatype/nexus3:3.94.0
       NEXUS_COMPAT_PORT: "38090"
       KKREPO_COMPAT_PORT: "18092"
+      # Proxy fixtures connect from inside kkRepo, where the published host port is unavailable.
+      ROUTING_RULES_KKREPO_UPSTREAM_BASE_URL: http://localhost:8080
       KKREPO_MANAGEMENT_PORT: "18093"
       COMPAT_WRITE_ENABLED: "true"
       CARGO_COMPAT_ENABLED: "true"

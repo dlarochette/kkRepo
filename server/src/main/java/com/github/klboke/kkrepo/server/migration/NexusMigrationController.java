@@ -56,6 +56,9 @@ import org.springframework.web.server.ResponseStatusException;
 public class NexusMigrationController {
   static final String REQUIRED_TARGET_BLOB_STORE = "default";
 
+  @Autowired
+  private com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao routingRules;
+
   private final ObjectMapper objectMapper;
   private final BlobStoreDao blobStoreDao;
   private final RepositoryDao repositoryDao;
@@ -318,7 +321,7 @@ public class NexusMigrationController {
         migrationJobDao,
         new SecurityDaoMigrationWriter(securityDao),
         terraformRegistry,
-        transactionManager);
+        transactionManager, routingRules);
   }
 
   private NexusMigrationRequest toRequest(NexusMigrationCommand command, boolean dryRun) {

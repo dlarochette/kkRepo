@@ -11,7 +11,25 @@ public interface RepositoryDao {
 
   Optional<RepositoryRecord> findById(long id);
 
+  /**
+   * Loads several repositories in one query. Callers that display or authorize a list of targets
+   * must use this instead of resolving each id separately.
+   */
+  default List<RepositoryRecord> findByIds(java.util.Collection<Long> ids) {
+    if (ids == null || ids.isEmpty()) {
+      return List.of();
+    }
+    return ids.stream()
+        .distinct()
+        .map(this::findById)
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
   Optional<RepositoryRecord> findByName(String name);
+
+  /** Lock an existing configuration row until the caller's transaction commits. */
+  Optional<RepositoryRecord> lockByName(String name);
 
   /** Durable repository configuration timestamp used to fence pre-configuration cache entries. */
   Optional<Instant> findUpdatedAt(long id);
@@ -37,6 +55,9 @@ public interface RepositoryDao {
   void replaceMembers(long groupRepositoryId, List<Long> memberRepositoryIds);
 
   List<RepositoryRecord> listGroupsContaining(long memberRepositoryId);
+
+  /** Direct parent group IDs for the supplied members, read from shared persistence. */
+  Map<Long, List<Long>> findParentGroupIds(List<Long> memberRepositoryIds);
 
   List<String> findNamesUsingBlobStore(long blobStoreId);
 

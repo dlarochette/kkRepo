@@ -581,6 +581,22 @@ public record RepositoryRuntime(
         .collect(java.util.stream.Collectors.toUnmodifiableSet());
   }
 
+  public boolean containsMember(long repositoryId) {
+    return members.stream().anyMatch(member -> member.id() == repositoryId || member.containsMember(repositoryId));
+  }
+
+  /** Copy only the ordered member tree for a request-scoped routing decision. */
+  public RepositoryRuntime withMembers(List<RepositoryRuntime> replacement) {
+    return new RepositoryRuntime(
+        id, name, format, type, recipeName, online, blobStoreId, writePolicy, versionPolicy,
+        layoutPolicy, strictContentTypeValidation, proxyRemoteUrl, contentMaxAgeMinutes,
+        metadataMaxAgeMinutes, autoBlock, proxyRemoteUsername, proxyRemotePassword,
+        proxyRemoteBearerToken, rawContentDisposition, dockerConnectorEnabled, dockerConnectorPort,
+        dockerConnectorPublicUrl, cargoRequireAuthentication, replacement, outboundProxy,
+        minimumReleaseAgeMinutes, allowedRedirectHosts, ntlmCredentials, yumRepodataDepth,
+        conanManifestMaxEntries, conanManifestMaxBytes);
+  }
+
   /** Authentication and discovery never inherit the content-only standalone star. */
   public RepositoryRuntime withoutPublicContentRedirects() {
     return new RepositoryRuntime(

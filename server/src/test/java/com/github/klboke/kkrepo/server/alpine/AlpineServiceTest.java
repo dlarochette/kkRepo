@@ -709,7 +709,8 @@ class AlpineServiceTest {
     RepositoryRuntime group = runtime(3L, RepositoryType.GROUP, "ALLOW", List.of());
     AlpineRegistryDao.SuiteState clean = suite(group.id(), NAMESPACE, 1L, 1L);
     AlpineRegistryDao.Snapshot ready = snapshot(group.id(), 1L,
-        Map.of(NAMESPACE + "/APKINDEX.tar.gz", ".alpine/group-ready"));
+        Map.of(NAMESPACE + "/APKINDEX.tar.gz", ".alpine/group-ready",
+            "@members", service.memberFingerprint(group, NAMESPACE)));
     when(registry.findSuite(group.id(), NAMESPACE)).thenReturn(Optional.of(clean));
     AtomicInteger snapshotReads = new AtomicInteger();
     when(published.find(group.id(), NAMESPACE)).thenAnswer(ignored ->
@@ -721,6 +722,18 @@ class AlpineServiceTest {
     verify(registry).ensureSuite(eq(group.id()), eq(NAMESPACE), any());
     verify(registry).markSuiteDirty(eq(group.id()), eq(NAMESPACE), any());
     verify(assets).serve(group, ".alpine/group-ready", false);
+  }
+
+  @Test
+  void refusesSnapshotPublishedForAnotherMemberProjection() {
+    RepositoryRuntime group = runtime(3L, RepositoryType.GROUP, "ALLOW", List.of());
+    when(registry.findSuite(group.id(), NAMESPACE)).thenReturn(Optional.of(suite(group.id(), NAMESPACE, 1L, 1L)));
+    when(published.find(group.id(), NAMESPACE)).thenReturn(Optional.of(snapshot(group.id(), 1L,
+        Map.of(NAMESPACE + "/APKINDEX.tar.gz", ".alpine/denied", "@members", "another-projection"))));
+    var failure = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+        () -> service.get(group, NAMESPACE + "/APKINDEX.tar.gz", false));
+    assertEquals(503, failure.getStatusCode().value());
+    verify(assets, never()).serve(eq(group), anyString(), anyBoolean());
   }
 
   private static AlpineRepositorySettings.Settings settings(boolean resign, boolean stale) {

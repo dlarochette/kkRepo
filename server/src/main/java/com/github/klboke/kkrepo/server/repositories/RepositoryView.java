@@ -34,7 +34,34 @@ public record RepositoryView(
     AlpineSettings alpine,
     PypiSettings pypi,
     YumSettings yum,
-    ConanSettings conan) {
+    ConanSettings conan,
+    String routingRuleName) {
+  /** Compatibility constructor for repository clients without routing rules. */
+  public RepositoryView(
+      Long id,
+      String name,
+      String recipe,
+      RepositoryFormat format,
+      RepositoryType type,
+      boolean online,
+      String blobStoreName,
+      boolean strictContentTypeValidation,
+      String url,
+      HostedSettings hosted,
+      ProxySettings proxy,
+      RawSettings raw,
+      DockerSettings docker,
+      CargoSettings cargo,
+      GroupSettings group,
+      AptSettings apt,
+      AlpineSettings alpine,
+      PypiSettings pypi,
+      YumSettings yum,
+      ConanSettings conan) {
+    this(id, name, recipe, format, type, online, blobStoreName, strictContentTypeValidation, url, hosted, proxy, raw,
+          docker, cargo, group, apt, alpine, pypi, yum, conan, null);
+  }
+
   /** Compatibility constructor for callers without Conan manifest overrides. */
   public RepositoryView(
       Long id,

@@ -16,6 +16,9 @@ class CsrfProtectionFilterTest {
   @ParameterizedTest
   @ValueSource(strings = {
       "/service/rest/v1/%73ecurity/users",
+      "/service/rest/v1/routing-rules",
+      "/service/rest/v1/%72outing-rules/rule",
+      "/internal/routing-rules/preview",
       "/service/rest/v1/security;x/users",
       "/%69nternal/security/users",
       "/internal/security;x/users",

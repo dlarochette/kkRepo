@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.cache;
 
+import com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy;
 import com.github.klboke.kkrepo.cache.LocalCache;
 import com.github.klboke.kkrepo.cache.LocalCacheFactory;
 import java.time.Duration;
@@ -89,6 +90,11 @@ public class NexusLikeCacheController {
   }
 
   public String currentToken(long repositoryId, NexusCacheType type) {
+    return RepositoryRoutingPolicy.cacheToken(
+        repositoryId, unscopedCurrentToken(repositoryId, type));
+  }
+
+  private String unscopedCurrentToken(long repositoryId, NexusCacheType type) {
     String key = tokenKey(repositoryId, type);
     try {
       if (TransactionSynchronizationManager.isActualTransactionActive()) return loadToken(key);
@@ -108,7 +114,8 @@ public class NexusLikeCacheController {
    * fail closed instead of publishing under a synthetic token.
    */
   public String currentDurableToken(long repositoryId, NexusCacheType type) {
-    return loadDurableToken(tokenKey(repositoryId, type));
+    return RepositoryRoutingPolicy.cacheToken(
+        repositoryId, loadDurableToken(tokenKey(repositoryId, type)));
   }
 
   public void invalidate(long repositoryId, NexusCacheType type) {

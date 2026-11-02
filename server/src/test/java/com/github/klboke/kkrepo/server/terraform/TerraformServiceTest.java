@@ -965,6 +965,23 @@ class TerraformServiceTest {
   }
 
   @Test
+  void groupArchiveFallsBackWhenItsPinnedProxyIsNoLongerAllowed() {
+    RepositoryRuntime denied = runtime(51, "denied", RepositoryType.PROXY, "https://example.com/", List.of());
+    RepositoryRuntime allowed = runtime(52, "allowed", RepositoryType.HOSTED, null, List.of());
+    RepositoryRuntime group = runtime(50, "terraform", RepositoryType.GROUP, null, List.of(allowed));
+    String archive = "v1/modules/acme/network/aws/1.0.0/module.zip";
+    when(registry.findSourceBinding(eq(group.id()), anyString())).thenReturn(Optional.of(
+        new TerraformRegistryDao.SourceBinding(group.id(), "old-binding", denied.id(), 0,
+            Instant.now().plusSeconds(60), Instant.now())));
+    when(runtimes.resolveById(denied.id())).thenThrow(
+        new com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy.Blocked());
+    when(assets.serve(allowed, archive, false)).thenReturn(MavenResponse.noBody(200));
+    assertEquals(200, service.get(group, paths.parse(archive), BASE, false).status());
+    verify(runtimes, never()).resolveById(denied.id());
+    verify(assets).serve(allowed, archive, false);
+  }
+
+  @Test
   void returnsNotFoundWhenNoGroupMemberHasPublishedVersions() {
     RepositoryRuntime first = runtime(
         87, "first-empty", RepositoryType.HOSTED, null, List.of());

@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.repositories;
 
+import com.github.klboke.kkrepo.server.routingrules.RoutingRuleService;
 import com.github.klboke.kkrepo.core.RepositoryFormat;
 import com.github.klboke.kkrepo.core.RepositoryRecipe;
 import com.github.klboke.kkrepo.core.RepositoryRecipes;
@@ -42,6 +43,7 @@ import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.ProxySett
 import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.PypiSettings;
 import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.YumSettings;
 import com.github.klboke.kkrepo.server.yum.YumMetadataDepth;
+import com.github.klboke.kkrepo.server.yum.YumMetadataCleanup;
 import com.github.klboke.kkrepo.server.conan.ConanManifestPolicy;
 import com.github.klboke.kkrepo.server.repositories.RepositoryCommands.ConanSettings;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryIndexRebuildDao;
@@ -69,6 +71,7 @@ import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -81,6 +84,13 @@ public class RepositoryService {
   private static final Set<String> MAVEN_LAYOUT_POLICIES = Set.of("STRICT", "PERMISSIVE");
   private static final Set<String> RAW_CONTENT_DISPOSITIONS = Set.of("INLINE", "ATTACHMENT");
   private static final int MAX_PROXY_REDIRECT_HOSTS = 64;
+
+  private RoutingRuleService routingRules;
+
+  @Autowired
+  void setRoutingRules(RoutingRuleService routingRules) {
+    this.routingRules = routingRules;
+  }
 
   private final RepositoryDao repositoryDao;
   private final BlobStoreDao blobStoreDao;
@@ -108,6 +118,7 @@ public class RepositoryService {
   private RRegistryDao rRegistry;
   private HuggingFaceRegistryDao huggingFaceRegistry;
   private DockerMigrationMetadataCleanup dockerMigrationCleanup;
+  private YumMetadataCleanup yumMetadataCleanup;
   private CleanupPolicyDao cleanupPolicies;
   private RepositoryIndexRebuildDao indexRebuildDao;
 
@@ -115,6 +126,11 @@ public class RepositoryService {
   void setDockerMigrationCleanup(
       DockerMigrationMetadataCleanup dockerMigrationCleanup) {
     this.dockerMigrationCleanup = dockerMigrationCleanup;
+  }
+
+  @Autowired
+  void setYumMetadataCleanup(YumMetadataCleanup yumMetadataCleanup) {
+    this.yumMetadataCleanup = yumMetadataCleanup;
   }
 
   @Autowired
@@ -358,12 +374,16 @@ public class RepositoryService {
         proxyRemoteUrl = proxy.remoteUrl();
         attributes.put("proxy", proxyAttributes(proxy));
       }
-      case GROUP -> attributes.put("group", Map.of());
+      case GROUP -> {
+        validateGroupWriteTarget(name, recipe.format(), command.group());
+        attributes.put("group", groupAttributes(command.group()));
+      }
     }
 
     RepositoryRecord toInsert = new RepositoryRecord(
         null, name, recipe.format(), recipe.type(), recipe.name(), online,
-        blobStoreId, null, proxyRemoteUrl, versionPolicy, layoutPolicy, writePolicy,
+        blobStoreId, routingRules == null ? null : routingRules.binding(recipe.type(), command.routingRuleName(), null),
+        proxyRemoteUrl, versionPolicy, layoutPolicy, writePolicy,
         strict, attributes);
     long id = repositoryDao.insert(toInsert);
 
@@ -405,7 +425,15 @@ public class RepositoryService {
 
   @Transactional
   public RepositoryView update(String name, UpdateCommand command) {
-    RepositoryRecord existing = repositoryDao.findByName(name)
+    RepositoryRecord observed = repositoryDao.findByName(name)
+        .orElseThrow(() -> new RepositoryNotFoundException(name));
+    if (routingRules != null) {
+      // Match migration's rule-before-repository lock order. Partial updates lock no rule.
+      routingRules.binding(observed.type(), command.routingRuleName(), null);
+    }
+    // Read the current committed binding under the row lock, including on MySQL RR:
+    // an earlier snapshot must not undo a concurrent assignment or removal.
+    RepositoryRecord existing = repositoryDao.lockByName(name)
         .orElseThrow(() -> new RepositoryNotFoundException(name));
     RepositoryRecipe recipe = RepositoryRecipes.byName(existing.recipeName())
         .orElseThrow(() -> new RepositoryValidationException(
@@ -501,7 +529,8 @@ public class RepositoryService {
 
     RepositoryRecord toUpdate = new RepositoryRecord(
         existing.id(), existing.name(), existing.format(), existing.type(), existing.recipeName(),
-        online, blobStoreId, existing.routingRuleId(), proxyRemoteUrl,
+        online, blobStoreId, routingRules == null ? existing.routingRuleId()
+            : routingRules.binding(recipe.type(), command.routingRuleName(), existing.routingRuleId()), proxyRemoteUrl,
         versionPolicy, layoutPolicy, writePolicy, strict, attributes);
     repositoryDao.update(toUpdate);
     if (rebuildYumMetadata && indexRebuildDao != null) {
@@ -532,7 +561,14 @@ public class RepositoryService {
     evictStaleOutboundProxyClient(existing.name(), existing.attributes(), attributes);
 
     if (recipe.type() == RepositoryType.GROUP && command.group() != null) {
-      List<Long> memberIds = resolveMemberIds(name, recipe.format(), command.group());
+      GroupSettings currentGroup = new GroupSettings(List.of(), readGroupWriteRepository(existing));
+      GroupSettings mergedGroup = new GroupSettings(
+          command.group().memberNames(),
+          command.group().writeRepository() == null
+              ? currentGroup.writeRepository() : command.group().writeRepository());
+      List<Long> memberIds = resolveMemberIds(name, recipe.format(), mergedGroup);
+      validateGroupWriteTarget(name, recipe.format(), mergedGroup);
+      attributes.put("group", groupAttributes(mergedGroup));
       repositoryDao.replaceMembers(existing.id(), memberIds);
       invalidateNpmGroupAfterCommit(existing.format(), existing.id());
       invalidatePypiGroupAfterCommit(existing.format(), existing.id());
@@ -571,7 +607,7 @@ public class RepositoryService {
     return get(name);
   }
 
-  @Transactional
+  @Transactional(isolation = Isolation.READ_COMMITTED)
   public void delete(String name) {
     RepositoryRecord existing = repositoryDao.findByName(name)
         .orElseThrow(() -> new RepositoryNotFoundException(name));
@@ -589,6 +625,10 @@ public class RepositoryService {
     if (existing.format() == RepositoryFormat.DOCKER && dockerMigrationCleanup != null
         && repositoryDao.hasComponents(existing.id())) {
       dockerMigrationCleanup.cleanupBeforeRepositoryDeletion(existing.id());
+    }
+    if (existing.format() == RepositoryFormat.YUM && existing.type() == RepositoryType.HOSTED
+        && yumMetadataCleanup != null) {
+      yumMetadataCleanup.cleanupBeforeRepositoryDeletion(existing.id());
     }
     if (repositoryDao.hasComponents(existing.id())) {
       throw new RepositoryValidationException(
@@ -638,7 +678,9 @@ public class RepositoryService {
     if (existing.type() != RepositoryType.GROUP) {
       throw new RepositoryValidationException("Repository '" + name + "' is not a group");
     }
-    List<Long> memberIds = resolveMemberIds(name, existing.format(), new GroupSettings(memberNames));
+    GroupSettings settings = new GroupSettings(memberNames, readGroupWriteRepository(existing));
+    validateGroupWriteTarget(name, existing.format(), settings);
+    List<Long> memberIds = resolveMemberIds(name, existing.format(), settings);
     repositoryDao.replaceMembers(existing.id(), memberIds);
     invalidateNpmGroupAfterCommit(existing.format(), existing.id());
     invalidatePypiGroupAfterCommit(existing.format(), existing.id());
@@ -1214,7 +1256,9 @@ public class RepositoryService {
       case HOSTED -> hosted = new HostedSettings(
           record.writePolicy(), record.versionPolicy(), record.layoutPolicy());
       case PROXY -> proxy = readProxyAttributesOrDefaults(record);
-      case GROUP -> group = new GroupSettings(groupMemberNames == null ? List.of() : groupMemberNames);
+      case GROUP -> group = new GroupSettings(
+          groupMemberNames == null ? List.of() : groupMemberNames,
+          readGroupWriteRepository(record));
     }
 
     return new RepositoryView(
@@ -1225,7 +1269,8 @@ public class RepositoryService {
         record.format() == RepositoryFormat.YUM && record.type() == RepositoryType.HOSTED
             ? new YumSettings(YumMetadataDepth.read(record.attributes())) : null,
         record.format() == RepositoryFormat.CONAN && record.type() != RepositoryType.GROUP
-            ? ConanManifestPolicy.read(record.attributes()) : null);
+            ? ConanManifestPolicy.read(record.attributes()) : null,
+        routingRules == null ? null : routingRules.name(record.routingRuleId()));
   }
 
   private Map<Long, String> blobStoreNameIndex() {
@@ -2182,6 +2227,49 @@ public class RepositoryService {
 
   private static String stringOrNull(Object value) {
     return value == null ? null : value.toString();
+  }
+
+  private static Map<String, Object> groupAttributes(GroupSettings group) {
+    Map<String, Object> attributes = new LinkedHashMap<>();
+    if (group != null && group.writeRepository() != null
+        && !group.writeRepository().isBlank()) {
+      attributes.put("writeRepository", group.writeRepository().trim());
+    }
+    return Map.copyOf(attributes);
+  }
+
+  private static String readGroupWriteRepository(RepositoryRecord record) {
+    if (record.attributes() == null) return null;
+    Object raw = record.attributes().get("group");
+    if (!(raw instanceof Map<?, ?> group)) return null;
+    Object value = group.get("writeRepository");
+    return value == null || value.toString().isBlank() ? null : value.toString().trim();
+  }
+
+  private void validateGroupWriteTarget(
+      String groupName, RepositoryFormat format, GroupSettings group) {
+    String target = group == null ? null : group.writeRepository();
+    if (target == null || target.isBlank()) return;
+    final String writeTarget = target.trim();
+    if (writeTarget.equals(groupName)) {
+      throw new RepositoryValidationException("Group write target cannot be the group itself: " + groupName);
+    }
+    RepositoryRecord repository = repositoryDao.findByName(writeTarget)
+        .orElseThrow(() -> new RepositoryValidationException(
+            "Group write target is not a repository: " + writeTarget));
+    if (repository.format() != format) {
+      throw new RepositoryValidationException(
+          "Group write target has a different format: " + writeTarget);
+    }
+    if (repository.type() != RepositoryType.HOSTED) {
+      throw new RepositoryValidationException(
+          "Group write target must be a hosted repository: " + writeTarget);
+    }
+    if (group.memberNames() == null || group.memberNames().stream()
+        .noneMatch(name -> writeTarget.equals(name))) {
+      throw new RepositoryValidationException(
+          "Group write target must be a group member: " + writeTarget);
+    }
   }
 
   private List<Long> resolveMemberIds(String groupName, RepositoryFormat format, GroupSettings group) {

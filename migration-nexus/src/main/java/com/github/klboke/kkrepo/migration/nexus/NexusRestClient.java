@@ -1774,13 +1774,20 @@ public class NexusRestClient {
       }
       repositoryDocuments.add(new RepositoryDocument(repository, detail));
     }
+    List<Map<String, Object>> routingRules = List.of();
+    String routingRulesError = null;
+    try { routingRules = getList("/service/rest/v1/routing-rules"); }
+    catch (IOException failure) {
+      // Never turn an inaccessible policy inventory into an empty policy set.
+      routingRulesError = "Cannot read Nexus routing rules: " + failure.getMessage();
+    }
     SecurityExportResult security = readSecurityExport(probe);
     return new NexusInventory(
         getList("/service/rest/v1/blobstores"),
         repositoryDocuments,
         security.export(),
         mergeWarnings(security.warnings(), probe == null ? List.of() : probe.warnings()),
-        probe);
+        probe, routingRules, routingRulesError);
   }
 
   private SourceProbe probeSource() throws IOException, InterruptedException {
@@ -2463,13 +2470,22 @@ public class NexusRestClient {
       List<RepositoryDocument> repositories,
       NexusSecurityExport securityExport,
       List<String> warnings,
-      SourceProbe probe) {
+      SourceProbe probe,
+      List<Map<String, Object>> routingRules,
+      String routingRulesError) {
 
     public NexusInventory {
+      routingRules = routingRules == null ? List.of() : List.copyOf(routingRules);
       blobStores = blobStores == null ? List.of() : List.copyOf(blobStores);
       repositories = repositories == null ? List.of() : List.copyOf(repositories);
       securityExport = securityExport == null ? NexusSecurityExport.empty() : securityExport;
       warnings = warnings == null ? List.of() : List.copyOf(warnings);
+    }
+
+    public NexusInventory(
+        List<Map<String, Object>> blobStores, List<RepositoryDocument> repositories,
+        NexusSecurityExport securityExport, List<String> warnings, SourceProbe probe) {
+      this(blobStores, repositories, securityExport, warnings, probe, List.of(), null);
     }
 
     public NexusInventory(

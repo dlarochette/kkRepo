@@ -27,6 +27,7 @@ import com.github.klboke.kkrepo.migration.nexus.security.NexusSecurityMigrationW
 import com.github.klboke.kkrepo.persistence.jdbc.api.BlobStoreDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.MigrationJobDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.RepositoryDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.RoutingRuleDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.TerraformRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.BlobStoreRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
@@ -65,6 +66,131 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class NexusApiMigrationServiceTest {
+
+  @Test
+  void validationReportsMissingOrAlteredRulesAndLostRepositoryBindings() {
+    var rules = new FakeRoutingRules();
+    var repositories = new FakeRepositoryDao();
+    var migration = new NexusRoutingRuleMigration(rules, repositories.asDao());
+    var definition = new NexusRoutingRuleMigration.Definition("private", "", "BLOCK", List.of("/private/.*"));
+    var plan = new NexusRoutingRuleMigration.Plan(List.of(definition),
+        List.of(new NexusRoutingRuleMigration.Binding("proxy", "private")), List.of(), "checksum");
+    assertEquals(List.of("Rule content mismatch: private", "Repository binding mismatch: proxy"), migration.validate(plan));
+    rules.insert("private", "", "ALLOW", List.of("/private/.*"));
+    assertTrue(migration.validate(plan).contains("Rule content mismatch: private"));
+    rules.update(1, "private", "", "BLOCK", List.of("/private/.*"));
+    assertEquals(List.of("Repository binding mismatch: proxy"), migration.validate(plan));
+    assertTrue(repositories.records.isEmpty());
+    assertEquals(1, rules.records.size());
+  }
+
+  @Test
+  void migratesRoutingRulesAndBothBindingSpellingsIdempotently() {
+    FakeBlobStoreDao stores = new FakeBlobStoreDao();
+    FakeRepositoryDao repos = new FakeRepositoryDao();
+    FakeRoutingRules rules = new FakeRoutingRules();
+    NexusApiMigrationService service = routingService(stores, repos, rules);
+    NexusInventory inventory = routingInventory(List.of(routingDefinition("BLOCK")), null);
+    var before = service.preflight(inventory, null).routingRules();
+    assertEquals(2, before.bindings().size());
+    assertEquals(64, before.checksum().length());
+    assertTrue(before.errors().isEmpty());
+    var dry = new NexusMigrationRequest("https://source.example", "admin", "password", null, true, null);
+    assertEquals(1, service.migrateConfig(inventory, dry).routingRules());
+    assertTrue(rules.records.isEmpty());
+    assertTrue(repos.records.isEmpty());
+    service.migrateConfig(inventory, request("https://source.example"));
+    long ruleId = rules.records.get("internal").id();
+    assertEquals(ruleId, repos.required("modern").routingRuleId());
+    assertEquals(ruleId, repos.required("legacy").routingRuleId());
+    service.migrateConfig(inventory, request("https://source.example"));
+    assertEquals(1, rules.records.size());
+    assertEquals(ruleId, rules.records.get("internal").id());
+    assertEquals(before.checksum(), service.preflight(inventory, null).routingRules().checksum());
+    assertTrue(new NexusRoutingRuleMigration(rules, repos.asDao()).validate(before).isEmpty());
+  }
+
+  @Test
+  void routingRuleConflictOrMissingInventoryPreventsAnyConfigurationWrites() {
+    FakeBlobStoreDao stores = new FakeBlobStoreDao();
+    FakeRepositoryDao repos = new FakeRepositoryDao();
+    FakeRoutingRules rules = new FakeRoutingRules();
+    rules.insert("internal", "test", "ALLOW", List.of("/private/.*"));
+    var service = routingService(stores, repos, rules);
+    for (NexusInventory inventory : List.of(
+        routingInventory(List.of(routingDefinition("BLOCK")), null),
+        routingInventory(List.of(), null),
+        routingInventory(List.of(), "Routing rule API returned HTTP 403"))) {
+      assertFalse(service.preflight(inventory, null).routingRules().errors().isEmpty());
+      assertThrows(IllegalArgumentException.class,
+          () -> service.migrateConfig(inventory, request("https://source.example")));
+      assertTrue(stores.records.isEmpty());
+      assertTrue(repos.records.isEmpty());
+      assertEquals("ALLOW", rules.records.get("internal").mode());
+    }
+  }
+
+  @Test
+  void routingRuleValidationRejectsBadRegexAndRechecksConcurrentChanges() {
+    FakeRoutingRules rules = new FakeRoutingRules();
+    var service = routingService(new FakeBlobStoreDao(), new FakeRepositoryDao(), rules);
+    Map<String, Object> invalid = new LinkedHashMap<>(routingDefinition("BLOCK"));
+    invalid.put("matchers", List.of("["));
+    assertFalse(service.preflight(routingInventory(List.of(invalid), null), null).routingRules().errors().isEmpty());
+    rules.insert("internal", "test", "BLOCK", List.of("/private/.*"));
+    var plan = service.preflight(routingInventory(List.of(routingDefinition("BLOCK")), null), null).routingRules();
+    rules.update(1, "internal", "test", "ALLOW", List.of("/private/.*"));
+    assertThrows(IllegalArgumentException.class, () -> new NexusRoutingRuleMigration(rules, null).apply(plan));
+  }
+
+  @Test
+  void rerunDoesNotSilentlyRemoveExistingTargetRoutingPolicy() {
+    FakeRepositoryDao repos = new FakeRepositoryDao();
+    FakeRoutingRules rules = new FakeRoutingRules();
+    var service = routingService(new FakeBlobStoreDao(), repos, rules);
+    var inventory = routingInventory(List.of(routingDefinition("BLOCK")), null);
+    service.migrateConfig(inventory, request("https://source.example"));
+    var unbound = new NexusInventory(inventory.blobStores(), List.of(repository("modern", "raw", "proxy",
+        Map.of("storage", storage("default"), "proxy", Map.of("remoteUrl", "https://example.com/")))),
+        NexusSecurityExport.empty(), List.of());
+    assertThrows(IllegalArgumentException.class, () -> service.migrateConfig(unbound, request("https://source.example")));
+    assertNotNull(repos.required("modern").routingRuleId());
+  }
+
+  private static Map<String, Object> routingDefinition(String mode) {
+    return Map.of("name", "internal", "description", "test", "mode", mode, "matchers", List.of("/private/.*"));
+  }
+
+  private static NexusInventory routingInventory(List<Map<String, Object>> rules, String error) {
+    return new NexusInventory(List.of(Map.of("name", "default")), List.of(
+        repository("modern", "raw", "proxy", Map.of("storage", storage("default"),
+            "proxy", Map.of("remoteUrl", "https://example.com/"), "routingRuleName", "internal")),
+        repository("legacy", "raw", "proxy", Map.of("storage", storage("default"),
+            "proxy", Map.of("remoteUrl", "https://example.com/"), "routingRule", "internal"))),
+        NexusSecurityExport.empty(), List.of(), null, rules, error);
+  }
+
+  private static NexusApiMigrationService routingService(FakeBlobStoreDao stores, FakeRepositoryDao repos, FakeRoutingRules rules) {
+    return new NexusApiMigrationService(new ObjectMapper(), stores.asDao(), repos.asDao(), null,
+        new FakeMigrationJobDao(), noopSecurityWriter(), null, null, rules);
+  }
+
+  private static class FakeRoutingRules implements RoutingRuleDao {
+    final Map<String, Rule> records = new LinkedHashMap<>();
+    public List<Rule> list() { return List.copyOf(records.values()); }
+    public Optional<Rule> findById(long id) { return records.values().stream().filter(r -> r.id() == id).findFirst(); }
+    public Optional<Rule> findByName(String name) { return Optional.ofNullable(records.get(name)); }
+    public Optional<Rule> lockByName(String name) { return findByName(name); }
+    public long insert(String name, String description, String mode, List<String> matchers) {
+      long id = records.size() + 1L; records.put(name, new Rule(id, name, description, mode, matchers)); return id;
+    }
+    public void update(long id, String name, String description, String mode, List<String> matchers) {
+      records.put(name, new Rule(id, name, description, mode, matchers));
+    }
+    public void delete(long id) { records.values().removeIf(r -> r.id() == id); }
+    public List<String> repositoriesUsing(long id) { return List.of(); }
+    public List<Binding> bindings() { return List.of(); }
+  }
 
   @Test
   void preservesNugetNtlmAuthenticationDuringMigration() {
@@ -1403,8 +1529,14 @@ class NexusApiMigrationServiceTest {
           RepositoryDao.class.getClassLoader(),
           new Class<?>[] {RepositoryDao.class},
           (proxy, method, args) -> switch (method.getName()) {
+            case "insert" -> {
+              RepositoryRecord value = (RepositoryRecord) args[0];
+              if (records.containsKey(value.name())) throw new IllegalStateException("Duplicate repository");
+              yield upsertByName(value).id();
+            }
+            case "findById" -> Optional.ofNullable(requiredById((Long) args[0]));
             case "upsertByName" -> upsertByName((RepositoryRecord) args[0]);
-            case "findByName" -> findByName((String) args[0]);
+            case "findByName", "lockByName" -> findByName((String) args[0]);
             case "replaceMembers" -> {
               @SuppressWarnings("unchecked")
               List<Long> memberIds = (List<Long>) args[1];

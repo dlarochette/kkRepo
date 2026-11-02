@@ -58,6 +58,40 @@ import org.springframework.mock.web.MockPart;
 class SwiftServiceTest {
 
   @Test
+  void groupSkipsPinnedReleaseWhenRoutingPolicyDeniesItsProxy() throws Exception {
+    Fixture fixture = fixture();
+    RepositoryRuntime denied = proxy(4L, "swift-denied");
+    RepositoryRuntime allowed = hosted(1L, "swift-allowed");
+    RepositoryRuntime group = group(2L, List.of(allowed));
+    var deniedRelease = releaseWithChecksum(44L, denied.id(), "1.2.3", "a".repeat(64));
+    var allowedRelease = releaseWithChecksum(11L, allowed.id(), "1.2.3", "b".repeat(64));
+    var oldBinding = new SwiftRegistryDao.GroupSourceBinding(group.id(), "acme", "demo", "1.2.3",
+        denied.id(), deniedRelease.id(), deniedRelease.revision(), 7L, Instant.EPOCH);
+    var newBinding = new SwiftRegistryDao.GroupSourceBinding(group.id(), "acme", "demo", "1.2.3",
+        allowed.id(), allowedRelease.id(), allowedRelease.revision(), 7L, Instant.EPOCH);
+    when(fixture.registry.currentRepositoryRevision(group.id())).thenReturn(7L);
+    when(fixture.registry.findGroupSourceBinding(group.id(), "acme", "demo", "1.2.3"))
+        .thenReturn(Optional.of(oldBinding), Optional.of(newBinding));
+    when(fixture.registry.findReleaseById(deniedRelease.id())).thenReturn(Optional.of(deniedRelease));
+    when(fixture.registry.findReleaseById(allowedRelease.id())).thenReturn(Optional.of(allowedRelease));
+    when(fixture.registry.findRelease(allowed.id(), "acme", "demo", "1.2.3"))
+        .thenReturn(Optional.of(allowedRelease));
+    when(fixture.registry.listReleases(allowed.id(), "acme", "demo")).thenReturn(List.of(allowedRelease));
+    when(fixture.registry.upsertGroupSourceBindingIfCurrent(any())).thenReturn(true);
+    when(fixture.runtimes.resolveById(denied.id())).thenThrow(
+        new com.github.klboke.kkrepo.server.routingrules.RepositoryRoutingPolicy.Blocked());
+    when(fixture.runtimes.resolveById(group.id())).thenReturn(Optional.of(group));
+    when(fixture.runtimes.resolveById(allowed.id())).thenReturn(Optional.of(allowed));
+
+    MavenResponse response = fixture.service.get(group, "Acme/Demo/1.2.3", null,
+        "https://repo.example/repository/swift-group/", SwiftMediaTypes.VENDOR_JSON, false);
+    assertEquals(200, response.status());
+    String body = responseBody(response);
+    assertTrue(body.contains("\"checksum\":\"" + "b".repeat(64) + "\""));
+    assertFalse(body.contains("\"checksum\":\"" + "a".repeat(64) + "\""));
+  }
+
+  @Test
   void releaseListReturnsReadyAndUnavailableVersionsInSemverOrderWithProtocolHeaders()
       throws Exception {
     Fixture fixture = fixture();

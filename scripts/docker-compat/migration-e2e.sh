@@ -5473,6 +5473,18 @@ print(f"metadata migration status={status} repositories={config.get('repositorie
 PY
 
   refresh_kkrepo_password_after_metadata_migration
+  NEXUS_COMPAT_AUTH="$NEXUS_USER:$NEXUS_PASSWORD" KKREPO_COMPAT_AUTH="$(auth)" \
+    python3 "$PROJECT_ROOT/compat-test/scripts/routing-rules-migration.py" verify \
+      --nexus "$NEXUS_URL" --kkrepo "$KKREPO_URL" --prefix "rr-$TAG_SAFE_LC"
+  # The matrix supplies a secondary URL on every row, but only the Swift
+  # restart/resume rows start a shared-database read replica.
+  if swift_migration_enabled && [[ -n "$KKREPO_SECONDARY_URL" ]]; then
+    wait_for_http "kkrepo routing-rule migration read replica" \
+      "$KKREPO_SECONDARY_URL/internal/repositories?purpose=admin" "$(auth)"
+    NEXUS_COMPAT_AUTH="$NEXUS_USER:$NEXUS_PASSWORD" KKREPO_COMPAT_AUTH="$(auth)" \
+      python3 "$PROJECT_ROOT/compat-test/scripts/routing-rules-migration.py" verify \
+        --nexus "$NEXUS_URL" --kkrepo "$KKREPO_SECONDARY_URL" --prefix "rr-$TAG_SAFE_LC"
+  fi
 
   log "verifying migrated repository configuration"
   curl -m 30 -fsS -u "$(auth)" "$KKREPO_URL/internal/repositories/$KKREPO_REPOSITORY" >"$repo_file"
@@ -5524,6 +5536,9 @@ wait_for_http "Nexus status endpoint" "$NEXUS_URL/service/rest/v1/status" "$NEXU
 wait_for_http "kkrepo health endpoint" "$KKREPO_HEALTH_URL"
 wait_for_http "kkrepo repositories endpoint" "$KKREPO_URL/internal/repositories?purpose=admin" "$(auth)"
 
+NEXUS_COMPAT_AUTH="$NEXUS_USER:$NEXUS_PASSWORD" \
+  python3 "$PROJECT_ROOT/compat-test/scripts/routing-rules-migration.py" prepare \
+    --nexus "$NEXUS_URL" --prefix "rr-$TAG_SAFE_LC"
 ensure_kkrepo_blob_store
 ensure_kkrepo_docker_repository
 if go_migration_enabled; then
