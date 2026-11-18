@@ -126,7 +126,7 @@ const SEARCH_FORMAT_LABEL = {
   r: "R / CRAN",
   huggingface: "Hugging Face Models",
   gitlfs: "Git LFS",
-  arch: "Arch Linux / Pacman",
+  arch: "Pacman / Arch Linux",
   openvsx: "VS Code / Open VSX",
   pypi: "PyPI",
   rubygems: "RubyGems",
