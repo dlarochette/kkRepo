@@ -13,6 +13,7 @@ import com.github.klboke.kkrepo.protocol.ohpm.OhpmException;
 import com.github.klboke.kkrepo.server.apt.AptService;
 import com.github.klboke.kkrepo.server.alpine.AlpineService;
 import com.github.klboke.kkrepo.server.arch.ArchService;
+import com.github.klboke.kkrepo.server.openvsx.OpenVsxHostedService;
 import com.github.klboke.kkrepo.server.ansible.AnsibleGalaxyService;
 import com.github.klboke.kkrepo.server.cargo.CargoHostedService;
 import com.github.klboke.kkrepo.server.composer.ComposerHostedService;
@@ -162,6 +163,7 @@ public class ComponentUploadService {
           field("asset", "FILE", "R source or binary package", false, null),
           field("pathId", "STRING", "Package Path (defaults to src/contrib)", true, null))),
       singleAsset("arch"),
+      singleAsset("openvsx"),
       singleAsset("nuget"),
       singleAsset("rubygems"),
       yumUpload(),
@@ -188,6 +190,7 @@ public class ComponentUploadService {
   private AlpineService alpineService;
   private RService rService;
   private ArchService archService;
+  private OpenVsxHostedService openVsxHosted;
   private com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget;
   private OhpmHostedService ohpmHosted;
   private OhpmAccess ohpmAccess;
@@ -308,6 +311,8 @@ public class ComponentUploadService {
   @Autowired(required = false)
   void setArchService(ArchService archService) {
     this.archService = archService;
+  void setOpenVsxHostedService(OpenVsxHostedService openVsxHosted) {
+    this.openVsxHosted = openVsxHosted;
   }
 
   @Autowired(required = false)
@@ -392,6 +397,7 @@ public class ComponentUploadService {
       case ALPINE -> uploadAlpine(runtime, upload, createdBy, createdByIp);
       case R -> uploadR(runtime, upload, createdBy, createdByIp);
       case ARCH -> uploadArch(runtime, upload, createdBy, createdByIp);
+      case OPENVSX -> uploadOpenVsx(runtime, upload, createdBy, createdByIp);
       case GITLFS -> throw new UploadValidationException("Git LFS uploads must use the Git LFS Batch/basic API");
       case OHPM -> uploadOhpm(runtime, upload, createdBy, createdByIp);
       case HUGGINGFACE -> throw new UploadValidationException(
@@ -667,6 +673,14 @@ public class ComponentUploadService {
     }
     try (InputStream body = asset.file().getInputStream()) {
       return List.of(archService.publish(runtime, filename, body, createdBy, createdByIp).path());
+  private List<String> uploadOpenVsx(
+    if (openVsxHosted == null) {
+      throw new UploadValidationException("Open VSX upload service is unavailable");
+    AssetUpload asset = singleAsset(upload, "Open VSX");
+    if (!filename.toLowerCase(Locale.ROOT).endsWith(".vsix")) {
+      throw new UploadValidationException("Open VSX upload requires a .vsix extension package");
+      return List.of(openVsxHosted.publish(
+          runtime, body, createdBy, createdByIp, "", runtime.name()).path());
     }
   }
 
@@ -1054,6 +1068,7 @@ public class ComponentUploadService {
       case ALPINE -> "alpine";
       case R -> "r";
       case ARCH -> "arch";
+      case OPENVSX -> "openvsx";
       case GITLFS -> "gitlfs";
       case HUGGINGFACE -> "huggingface";
       case RAW -> "raw";

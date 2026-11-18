@@ -1428,6 +1428,7 @@ public class RepositoryService {
       case ANSIBLEGALAXY -> "https://galaxy.ansible.com/";
       case CONAN -> "https://center2.conan.io/";
       case ARCH -> "https://geo.mirror.pkgbuild.com/core/os/x86_64/";
+      case OPENVSX -> "https://open-vsx.org/";
       default -> null;
     };
   }
@@ -2342,7 +2343,8 @@ public class RepositoryService {
         || format == RepositoryFormat.HELM
         || format == RepositoryFormat.TERRAFORM || format == RepositoryFormat.SWIFT
         || format == RepositoryFormat.ANSIBLEGALAXY || format == RepositoryFormat.CONDA
-        || format == RepositoryFormat.ARCH;
+        || format == RepositoryFormat.ARCH
+        || format == RepositoryFormat.OPENVSX;
   }
 
   private static String normalizeAnsibleGalaxyRemoteUrl(String remoteUrl) {

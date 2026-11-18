@@ -889,6 +889,18 @@ Without a configured signing key, use `SigLevel = Optional TrustAll` or omit
 `DatabaseRequired`.
 
 See the [Arch Linux / Pacman Repository Guide](repository-guides/arch-linux.md).
+## VS Code / Open VSX
+Publish with an `OpenVsxToken` API key:
+ovsx publish \
+  --registryUrl https://nexus.example.com/repository/openvsx-hosted \
+  --pat "$OPENVSX_TOKEN" \
+  acme-demo-1.0.0.vsix
+Read metadata and download the VSIX:
+curl https://nexus.example.com/repository/openvsx-group/api/acme/demo
+curl -O https://nexus.example.com/repository/openvsx-group/api/acme/demo/1.0.0/file/acme.demo-1.0.0.vsix
+VS Code-compatible editors can point their gallery at
+`https://nexus.example.com/repository/openvsx-group/vscode/gallery`.
+See the [VS Code / Open VSX Repository Guide](repository-guides/openvsx.md).
 
 ## Troubleshooting Client Configuration
 

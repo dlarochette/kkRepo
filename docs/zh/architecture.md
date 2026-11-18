@@ -88,6 +88,7 @@ Admin UI 和 Browse UI 由 Spring Boot 服务提供静态资源：
 | `protocol-nuget` | NuGet 路径辅助逻辑 |
 | `protocol-rubygems` | RubyGems metadata 辅助逻辑 |
 | `protocol-arch` | pacman 路径、包文件名标识、`desc` 记录和版本排序 |
+| `protocol-openvsx` | Open VSX registry 路径、标识和版本排序 |
 | `protocol-yum` | Yum/RPM metadata 辅助逻辑 |
 | `persistence-jdbc` | 公共 JDBC DAO 和数据库 dialect 契约 |
 | `persistence-mysql` | MySQL dialect、驱动、迁移和契约测试 |

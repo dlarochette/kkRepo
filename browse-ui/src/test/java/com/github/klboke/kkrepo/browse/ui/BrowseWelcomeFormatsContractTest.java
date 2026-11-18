@@ -14,7 +14,7 @@ class BrowseWelcomeFormatsContractTest {
   private static final List<String> FORMATS = List.of(
       "maven2", "npm", "ohpm", "pypi", "cargo", "pub", "composer", "terraform", "swift",
       "ansiblegalaxy", "conda", "conan", "apt", "alpine", "gitlfs", "huggingface", "go",
-      "r", "helm", "docker", "nuget", "rubygems", "yum", "arch", "raw");
+      "r", "helm", "docker", "nuget", "rubygems", "yum", "arch", "openvsx", "raw");
 
   @Test
   void welcomePageShowsEverySupportedFormatWithAnIcon() throws IOException {

@@ -1202,6 +1202,8 @@ class RepositoryDataMigrationWriter {
       case HUGGINGFACE -> "huggingface-model-file";
       case ARCH -> source.sourcePath().contains(".pkg.tar.")
           ? "arch-package" : "arch-database";
+      case OPENVSX -> source.sourcePath().endsWith(".vsix") ? "openvsx-extension"
+          : "openvsx-metadata";
       case RAW -> "asset";
     };
   }

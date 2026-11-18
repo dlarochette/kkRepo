@@ -21,6 +21,7 @@ class RepositoryFormatJsonTest {
     assertEquals("\"pub\"", mapper.writeValueAsString(RepositoryFormat.PUB));
     assertEquals("\"composer\"", mapper.writeValueAsString(RepositoryFormat.COMPOSER));
     assertEquals("\"arch\"", mapper.writeValueAsString(RepositoryFormat.ARCH));
+    assertEquals("\"openvsx\"", mapper.writeValueAsString(RepositoryFormat.OPENVSX));
     assertEquals(RepositoryFormat.MAVEN2, mapper.readValue("\"maven2\"", RepositoryFormat.class));
     assertEquals(RepositoryFormat.NPM, mapper.readValue("\"npm\"", RepositoryFormat.class));
     assertEquals(RepositoryFormat.NUGET, mapper.readValue("\"nuget\"", RepositoryFormat.class));
@@ -29,6 +30,7 @@ class RepositoryFormatJsonTest {
     assertEquals(RepositoryFormat.PUB, mapper.readValue("\"pub\"", RepositoryFormat.class));
     assertEquals(RepositoryFormat.COMPOSER, mapper.readValue("\"composer\"", RepositoryFormat.class));
     assertEquals(RepositoryFormat.ARCH, mapper.readValue("\"arch\"", RepositoryFormat.class));
+    assertEquals(RepositoryFormat.OPENVSX, mapper.readValue("\"openvsx\"", RepositoryFormat.class));
   }
 
   @Test

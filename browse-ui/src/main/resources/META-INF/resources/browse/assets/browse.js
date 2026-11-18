@@ -67,6 +67,7 @@ const SEARCH_ROUTE_FORMAT = {
   huggingface: "huggingface",
   gitlfs: "gitlfs",
   arch: "arch",
+  openvsx: "openvsx",
   pypi: "pypi",
   rubygems: "rubygems",
   yum: "yum",
@@ -96,6 +97,7 @@ const FORMAT_ROUTE_SEGMENT = {
   huggingface: "huggingface",
   gitlfs: "gitlfs",
   arch: "arch",
+  openvsx: "openvsx",
   pypi: "pypi",
   rubygems: "rubygems",
   yum: "yum",
@@ -125,6 +127,7 @@ const SEARCH_FORMAT_LABEL = {
   huggingface: "Hugging Face Models",
   gitlfs: "Git LFS",
   arch: "Arch Linux / Pacman",
+  openvsx: "VS Code / Open VSX",
   pypi: "PyPI",
   rubygems: "RubyGems",
   yum: "Yum",
@@ -243,6 +246,8 @@ function componentBrowsePath(component) {
   }
   if (format === "arch") {
     return name;
+  if (format === "openvsx") {
+    return [group, name, version].filter(Boolean).join("/");
   }
   return "";
 }
@@ -825,6 +830,7 @@ const FORMAT_ICON_NAMES = Object.freeze({
   huggingface: "huggingface",
   gitlfs: "gitlfs",
   arch: "arch",
+  openvsx: "openvsx",
   go: "go",
   helm: "helm",
   docker: "docker",
@@ -847,7 +853,7 @@ function formatBadge(format) {
 const FILE_ICON_RULES = Object.freeze([
   Object.freeze({
     icon: "file-key",
-    suffixes: Object.freeze([".tgz.prov", ".prov", ".asc", ".sig", ".key"]),
+    suffixes: Object.freeze([".tgz.prov", ".prov", ".asc", ".sig", ".key", ".vsix"]),
   }),
   Object.freeze({
     icon: "file-check",

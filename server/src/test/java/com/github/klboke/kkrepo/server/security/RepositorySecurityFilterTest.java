@@ -1826,6 +1826,15 @@ class RepositorySecurityFilterTest {
 
     filter.doFilter(
         request("PUT", "/repository/arch-hosted/" + path),
+  void openVsxGalleryPostRoutesRequireReadButPublishRequiresAdd() throws Exception {
+    assertOpenVsxPostAction("vscode/gallery/extensionquery", PermissionAction.READ);
+    assertOpenVsxPostAction("vscode/item", PermissionAction.READ);
+    assertOpenVsxPostAction("api/-/publish", PermissionAction.ADD);
+  private static void assertOpenVsxPostAction(String path, PermissionAction expected)
+      throws Exception {
+            "openvsx-hosted", RepositoryFormat.OPENVSX, RepositoryType.HOSTED)),
+        new FakeAssetDao(Set.of()),
+        request("POST", "/repository/openvsx-hosted/" + path),
         new MockHttpServletResponse(),
         chain);
 
