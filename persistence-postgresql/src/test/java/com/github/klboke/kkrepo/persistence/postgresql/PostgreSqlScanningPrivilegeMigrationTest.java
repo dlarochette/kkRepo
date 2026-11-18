@@ -65,7 +65,8 @@ class PostgreSqlScanningPrivilegeMigrationTest extends PostgreSqlIntegrationTest
     assertEquals(15, current.migrate().migrationsExecuted);
     assertEquals(definitions, jdbc().queryForList("""
         SELECT privilege_id, name, description, type, read_only, properties_json
-        FROM security_privilege WHERE privilege_id <> 'nx-security-scanning-waivers-delete'
+        FROM security_privilege WHERE privilege_id NOT IN ('nx-security-scanning-waivers-delete',
+            'nx-lifecycle-read', 'nx-lifecycle-update', 'nx-kkquality-read', 'nx-kkquality-update')
         ORDER BY privilege_id
         """));
     assertEquals(bindings, jdbc().queryForList("""

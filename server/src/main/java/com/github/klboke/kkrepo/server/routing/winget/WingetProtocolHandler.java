@@ -1,4 +1,4 @@
-package com.github.klboke.kkrepo.server.winget;
+package com.github.klboke.kkrepo.server.routing.winget;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,6 +20,9 @@ import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.routing.LegacyRepositoryProtocolHandler;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
+import com.github.klboke.kkrepo.server.winget.WingetJson;
+import com.github.klboke.kkrepo.server.winget.WingetSearchPage;
+import com.github.klboke.kkrepo.server.winget.WingetService;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.net.URLEncoder;

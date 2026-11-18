@@ -1,4 +1,4 @@
-package com.github.klboke.kkrepo.server.winget;
+package com.github.klboke.kkrepo.server.routing.winget;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -20,6 +20,8 @@ import com.github.klboke.kkrepo.protocol.winget.WingetManifestParser;
 import com.github.klboke.kkrepo.protocol.winget.WingetVersionSummary;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
+import com.github.klboke.kkrepo.server.winget.WingetService;
+import com.github.klboke.kkrepo.server.winget.WingetSearchPage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.jupiter.api.Test;
