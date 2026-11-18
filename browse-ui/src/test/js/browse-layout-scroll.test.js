@@ -20,9 +20,9 @@ test("keeps the expanded navigation inside the sidebar scroll container", () => 
 test("cache-busts the current Browse assets", () => {
   const html = readFileSync(resolve(browseRoot, "index.html"), "utf8");
 
-  assert.match(html, /browse\.css\?v=20261013-delete-confirmation-1/);
+  assert.match(html, /browse\.css\?v=20261118-format-names-1/);
   assert.match(html, /browse\.js\?v=20261106-ohpm-management/);
-  assert.match(html, /format-icons\.css\?v=20261106-ohpm/);
+  assert.match(html, /format-icons\.css\?v=20261118-format-icons-1/);
 });
 
 test("keeps the icon format picker below its trigger", () => {
@@ -32,7 +32,7 @@ test("keeps the icon format picker below its trigger", () => {
   const popoverRule = css.match(/\.search-format-popover\s*\{([^}]*)\}/)?.[1] || "";
   const filterRule = css.match(/\.search-form \.search-format-filter\s*\{([^}]*)\}/)?.[1] || "";
 
-  assert.equal((html.match(/class="search-format-option"/g) || []).length, 23);
+  assert.equal((html.match(/class="search-format-option"/g) || []).length, 25);
   assert.match(html, /aria-haspopup="listbox"/);
   assert.match(html, /placeholder="Filter formats"/);
   assert.ok(
