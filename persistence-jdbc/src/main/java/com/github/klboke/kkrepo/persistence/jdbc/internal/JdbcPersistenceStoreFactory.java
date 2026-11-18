@@ -47,6 +47,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.StagingDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.SwiftRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.TerraformRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.UiSettingsDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.WingetDao;
 import com.github.klboke.kkrepo.persistence.jdbc.internal.support.JsonColumns;
 import com.github.klboke.kkrepo.persistence.jdbc.spi.DatabaseDialect;
 import com.github.klboke.kkrepo.persistence.jdbc.spi.DatabaseDialects;
@@ -112,7 +113,8 @@ public final class JdbcPersistenceStoreFactory implements PersistenceStoreFactor
         new JdbcStorageStatisticsDao(jdbc),
         new JdbcSwiftRegistryDao(jdbc, json, dialect),
         new JdbcTerraformRegistryDao(jdbc),
-        new JdbcUiSettingsDao(jdbc));
+        new JdbcUiSettingsDao(jdbc),
+        new JdbcWingetDao(jdbc));
   }
 
   private record DefaultPersistenceStores(
@@ -158,6 +160,7 @@ public final class JdbcPersistenceStoreFactory implements PersistenceStoreFactor
       StorageStatisticsDao storageStatistics,
       SwiftRegistryDao swiftRegistry,
       TerraformRegistryDao terraformRegistry,
-      UiSettingsDao uiSettings) implements PersistenceStores {
+      UiSettingsDao uiSettings,
+      WingetDao winget) implements PersistenceStores {
   }
 }

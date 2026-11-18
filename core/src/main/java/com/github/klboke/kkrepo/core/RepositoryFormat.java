@@ -30,6 +30,7 @@ public enum RepositoryFormat {
   GITLFS,
   ARCH,
   OPENVSX,
+  WINGET,
   RAW;
 
   @JsonCreator

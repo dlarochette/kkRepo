@@ -83,6 +83,9 @@ public final class RepositoryRecipes {
       new RepositoryRecipe("openvsx-hosted", RepositoryFormat.OPENVSX, RepositoryType.HOSTED),
       new RepositoryRecipe("openvsx-proxy", RepositoryFormat.OPENVSX, RepositoryType.PROXY),
       new RepositoryRecipe("openvsx-group", RepositoryFormat.OPENVSX, RepositoryType.GROUP),
+      new RepositoryRecipe("winget-hosted", RepositoryFormat.WINGET, RepositoryType.HOSTED),
+      new RepositoryRecipe("winget-proxy", RepositoryFormat.WINGET, RepositoryType.PROXY),
+      new RepositoryRecipe("winget-group", RepositoryFormat.WINGET, RepositoryType.GROUP),
       new RepositoryRecipe("raw-hosted", RepositoryFormat.RAW, RepositoryType.HOSTED),
       new RepositoryRecipe("raw-proxy", RepositoryFormat.RAW, RepositoryType.PROXY),
       new RepositoryRecipe("raw-group", RepositoryFormat.RAW, RepositoryType.GROUP));

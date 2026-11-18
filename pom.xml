@@ -37,6 +37,7 @@
     <module>protocol-gitlfs</module>
     <module>protocol-arch</module>
     <module>protocol-openvsx</module>
+    <module>protocol-winget</module>
     <module>protocol-go</module>
     <module>protocol-helm</module>
     <module>protocol-docker</module>
@@ -302,6 +303,7 @@
         <groupId>com.github.klboke</groupId>
         <artifactId>kkrepo-protocol-arch</artifactId>
         <artifactId>kkrepo-protocol-openvsx</artifactId>
+        <artifactId>kkrepo-protocol-winget</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
