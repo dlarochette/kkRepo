@@ -22,6 +22,7 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.DockerRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.DockerUploadDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.HuggingFaceRegistryDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao;
+import com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.GitLfsDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.MaintenanceCursorDao;
 import com.github.klboke.kkrepo.persistence.jdbc.api.MetadataRebuildDao;
@@ -93,6 +94,7 @@ public final class JdbcPersistenceStoreFactory implements PersistenceStoreFactor
         new JdbcHuggingFaceRegistryDao(jdbc, dialect),
         new JdbcKkGuardDao(jdbc, json),
         new JdbcGitLfsDao(jdbc),
+        new JdbcKkQualityDao(jdbc, json),
         new JdbcMaintenanceCursorDao(jdbc),
         new JdbcMetadataRebuildDao(jdbc, dialect),
         new JdbcMigrationCheckpointDao(jdbc),
@@ -141,6 +143,7 @@ public final class JdbcPersistenceStoreFactory implements PersistenceStoreFactor
       HuggingFaceRegistryDao huggingFaceRegistry,
       KkGuardDao kkGuard,
       GitLfsDao gitLfs,
+      KkQualityDao kkQuality,
       MaintenanceCursorDao maintenanceCursors,
       MetadataRebuildDao metadataRebuild,
       MigrationCheckpointDao migrationCheckpoints,

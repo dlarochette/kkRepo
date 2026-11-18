@@ -43,6 +43,7 @@ public interface PersistenceStores extends AutoCloseable {
   GitLfsDao gitLfs();
 
   KkGuardDao kkGuard();
+  KkQualityDao kkQuality();
 
   MaintenanceCursorDao maintenanceCursors();
 
