@@ -45,3 +45,6 @@ OHPM / OpenHarmony marks belong to their respective owners.
 
 The Pacman / Arch Linux compatibility mark is an original geometric mark drawn for kkRepo. It is
 not an official Arch Linux trademark asset.
+
+The VS Code / Open VSX code-brackets compatibility mark is an original mark drawn for kkRepo. It
+is not an official Visual Studio Code, Eclipse or Open VSX trademark asset.
