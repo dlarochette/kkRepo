@@ -246,6 +246,7 @@ function componentBrowsePath(component) {
   }
   if (format === "arch") {
     return name;
+  }
   if (format === "openvsx") {
     return [group, name, version].filter(Boolean).join("/");
   }

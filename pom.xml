@@ -313,7 +313,15 @@
       <dependency>
         <groupId>com.github.klboke</groupId>
         <artifactId>kkrepo-protocol-arch</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.klboke</groupId>
         <artifactId>kkrepo-protocol-openvsx</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.klboke</groupId>
         <artifactId>kkrepo-protocol-winget</artifactId>
         <version>${project.version}</version>
       </dependency>
