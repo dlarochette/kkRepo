@@ -542,6 +542,7 @@ public abstract class PersistenceApiContract {
         "kkq_analysis",
         "kkq_branch",
         "kkq_issue",
+        "kkq_issue_occurrence",
         "kkq_measure",
         "kkq_project",
         "kkq_quality_gate",
