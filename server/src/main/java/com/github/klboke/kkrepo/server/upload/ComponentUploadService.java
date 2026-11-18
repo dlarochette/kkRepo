@@ -311,6 +311,9 @@ public class ComponentUploadService {
   @Autowired(required = false)
   void setArchService(ArchService archService) {
     this.archService = archService;
+  }
+
+  @Autowired(required = false)
   void setOpenVsxHostedService(OpenVsxHostedService openVsxHosted) {
     this.openVsxHosted = openVsxHosted;
   }
@@ -675,12 +678,23 @@ public class ComponentUploadService {
     }
     try (InputStream body = asset.file().getInputStream()) {
       return List.of(archService.publish(runtime, filename, body, createdBy, createdByIp).path());
+    }
+  }
+
   private List<String> uploadOpenVsx(
+      RepositoryRuntime runtime,
+      NormalizedUpload upload,
+      String createdBy,
+      String createdByIp) throws IOException {
     if (openVsxHosted == null) {
       throw new UploadValidationException("Open VSX upload service is unavailable");
+    }
     AssetUpload asset = singleAsset(upload, "Open VSX");
+    String filename = originalFilename(asset.file());
     if (!filename.toLowerCase(Locale.ROOT).endsWith(".vsix")) {
       throw new UploadValidationException("Open VSX upload requires a .vsix extension package");
+    }
+    try (InputStream body = asset.file().getInputStream()) {
       return List.of(openVsxHosted.publish(
           runtime, body, createdBy, createdByIp, "", runtime.name()).path());
     }

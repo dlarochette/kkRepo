@@ -6977,6 +6977,8 @@ public abstract class PersistenceApiContract {
 
   private static String sha256Hex(String value) {
     return java.util.HexFormat.of().formatHex(sha256(value));
+  }
+
   @Test
   void kkGuardOrganizationsApplicationsScansAndPoliciesRoundTrip() {
     com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao dao = stores().kkGuard();
@@ -7032,6 +7034,7 @@ public abstract class PersistenceApiContract {
     assertTrue(dao.findScan(scanId).isEmpty());
     assertTrue(dao.deleteOrganization(organizationId));
   }
+
   @Test
   void kkGuardScanLeasesFenceSubmissionPollingAndCompletion() {
     com.github.klboke.kkrepo.persistence.jdbc.api.KkGuardDao dao = stores().kkGuard();
@@ -7048,6 +7051,7 @@ public abstract class PersistenceApiContract {
         0L, applicationId, "lease-scan-" + suffix, "PENDING", "build", "cli", sbomSha,
         null, 0, 0, null, null, null, 0, null, null, null, null, now, null, null));
     java.time.Instant leaseUntil = now.plusSeconds(60);
+
     assertTrue(dao.listClaimableScanIds(now, 50).contains(scanId));
     assertTrue(dao.claimScan(scanId, "replica-a", now, leaseUntil));
     assertFalse(dao.claimScan(scanId, "replica-b", now, leaseUntil));
@@ -7056,10 +7060,12 @@ public abstract class PersistenceApiContract {
     assertTrue(dao.markScanSubmitted(scanId, "replica-a", "dt-project", "dt-token", now));
     assertEquals("SCANNING", dao.findScan(scanId).orElseThrow().status());
     assertEquals("dt-token", dao.findScan(scanId).orElseThrow().dtBomToken());
+
     assertTrue(dao.claimScan(scanId, "replica-b", now, leaseUntil));
     assertFalse(dao.markScanPolled(scanId, "replica-a", 1, now));
     assertTrue(dao.markScanPolled(scanId, "replica-b", 1, now));
     assertEquals(1, dao.findScan(scanId).orElseThrow().attempts());
+
     // Snapshot writes are fenced by the same lease as the state transitions: the replica that lost
     // the lease cannot overwrite the findings of the replica that took over.
     assertFalse(dao.replaceScanComponents(scanId, "replica-a", List.of(
@@ -7083,6 +7089,7 @@ public abstract class PersistenceApiContract {
             new java.math.BigDecimal("8.1"), "dependency-track", "demo finding", null))));
     assertEquals(1, dao.listScanFindings(scanId).size());
     assertFalse(dao.replaceViolations(scanId, "replica-a", List.of()));
+
     assertFalse(dao.finishScan(scanId, "replica-a", "COMPLETE", null, 1, 0, now));
     assertTrue(dao.finishScan(scanId, "replica-b", "COMPLETE", null, 1, 0, now));
     assertEquals("COMPLETE", dao.findScan(scanId).orElseThrow().status());
@@ -7090,16 +7097,22 @@ public abstract class PersistenceApiContract {
     // finished scan.
     assertFalse(dao.replaceScanComponents(scanId, "replica-b", List.of()));
     assertEquals(1, dao.listScanComponents(scanId).size());
+
     assertEquals(scanId,
         dao.findCompletedScanBySbom(applicationId, "cli", sbomSha).orElseThrow().id());
     assertTrue(dao.findCompletedScanBySbom(applicationId, "other", sbomSha).isEmpty());
     assertTrue(dao.listClaimableScanIds(now, 50).stream()
         .noneMatch(id -> id != null && id.longValue() == scanId));
+
     assertTrue(dao.deleteApplication(applicationId));
     assertTrue(dao.deleteOrganization(organizationId));
   }
+
+  @Test
   void kkQualityRoundTripKeepsIssuesUniqueAcrossRepeatedAnalyses() {
     com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao dao = stores().kkQuality();
+    String suffix = java.util.UUID.randomUUID().toString().substring(0, 8);
+    Instant now = Instant.now();
     String projectKey = "project-" + suffix;
     String externalId = java.util.UUID.randomUUID().toString();
     long projectId = dao.insertProject(
@@ -7108,9 +7121,11 @@ public abstract class PersistenceApiContract {
     assertEquals(projectId, dao.findProjectByExternalId(externalId).orElseThrow().id());
     assertNull(dao.findProjectByKey(projectKey).orElseThrow().repositoryId());
     assertTrue(dao.updateProject(projectId, projectKey, "Project 2", "org", "public", now));
+
     long mainBranch = dao.insertBranch(projectId, "main", true, now);
     long featureBranch = dao.insertBranch(projectId, "feature", false, now);
     assertTrue(dao.lockBranch(mainBranch));
+
     String fingerprint = "fingerprint-" + suffix;
     long analysis1 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
         .KkQualityDao.Analysis(
@@ -7127,6 +7142,7 @@ public abstract class PersistenceApiContract {
     assertTrue(dao.completeAnalysis(analysis1, 2, 2, "a".repeat(64), now));
     assertEquals(2, dao.countIssues(projectId, mainBranch, null));
     assertEquals(2, dao.countNewIssues(projectId, mainBranch, analysis1));
+
     // A second analysis of an unchanged tree must not duplicate issues nor report them as new.
     long analysis2 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
         .KkQualityDao.Analysis(
@@ -7142,6 +7158,7 @@ public abstract class PersistenceApiContract {
     assertEquals(2, dao.countIssues(projectId, mainBranch, null));
     assertEquals(0, dao.countNewIssues(projectId, mainBranch, analysis2));
     assertEquals(11, dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().line());
+
     // The identical fingerprint on another branch is a distinct issue.
     long featureIssue = dao.insertIssue(
         projectId, featureBranch, fingerprint, analysis2, "src/App.java", 10, 12, "semgrep",
@@ -7149,12 +7166,14 @@ public abstract class PersistenceApiContract {
     dao.insertOccurrence(featureIssue, analysis2, 10, 12, "h1", now);
     assertEquals(1, dao.countIssues(projectId, featureBranch, null));
     assertEquals(3, dao.countIssues(projectId, null, null));
+
     // A duplicate fingerprint on the same branch is rejected by the unique constraint.
     org.junit.jupiter.api.Assertions.assertThrows(
         org.springframework.dao.DataAccessException.class,
         () -> dao.insertIssue(
             projectId, mainBranch, fingerprint, analysis1, "src/App.java", 10, 12, "semgrep",
             "rule-1", "MAJOR", "CODE_SMELL", "Avoid this", now));
+
     // Filters are applied in SQL, including facets.
     assertEquals(1, dao.countIssues(projectId, mainBranch, new com.github.klboke.kkrepo.persistence
         .jdbc.api.KkQualityDao.IssueFilter(
@@ -7164,6 +7183,7 @@ public abstract class PersistenceApiContract {
             null, null, null, null, null, null, null, null, "injection")));
     assertEquals(1, dao.countOpenIssuesByType(projectId, mainBranch).stream()
         .filter(count -> "VULNERABILITY".equals(count.key())).findFirst().orElseThrow().count());
+
     // An issue the next analysis does not observe is closed, then reopened when it comes back.
     long analysis3 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
         .KkQualityDao.Analysis(
@@ -7181,6 +7201,7 @@ public abstract class PersistenceApiContract {
     assertEquals(1, dao.countIssues(projectId, mainBranch, new com.github.klboke.kkrepo
         .persistence.jdbc.api.KkQualityDao.IssueFilter(
             List.of("OPEN"), null, null, null, null, null, null, null, null)));
+
     long analysis4 = dao.insertAnalysis(new com.github.klboke.kkrepo.persistence.jdbc.api
         .KkQualityDao.Analysis(
             0L, projectId, mainBranch, java.util.UUID.randomUUID().toString(), "RUNNING", "rev-4",
@@ -7191,12 +7212,14 @@ public abstract class PersistenceApiContract {
     assertEquals("REOPENED",
         dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().status());
     assertNull(dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow().closedAt());
+
     assertTrue(dao.updateIssueState(
         projectId, mainBranch, fingerprint, "FALSE_POSITIVE", "FALSE_POSITIVE", "alice", now));
     var marked = dao.findIssue(projectId, mainBranch, fingerprint).orElseThrow();
     assertEquals("FALSE_POSITIVE", marked.resolution());
     assertEquals("alice", marked.assignee());
     assertNotNull(marked.closedAt());
+
     // Rules are global reference data and must be idempotent.
     String engine = "semgrep-" + suffix;
     dao.upsertRule(engine, "rule-1", "Rule", "MAJOR", "java", "desc", "fix", now);
@@ -7208,10 +7231,12 @@ public abstract class PersistenceApiContract {
     assertEquals(2, dao.countRules(engine, null, List.of()));
     assertEquals(1, dao.countRules(engine, null, List.of("python")));
     assertEquals(1, dao.listRules(engine, null, List.of("python"), 10, 0).size());
+
     dao.replaceMeasures(analysis4, List.of(
         new com.github.klboke.kkrepo.persistence.jdbc.api.KkQualityDao.Measure(
             analysis4, "bugs", new java.math.BigDecimal("1"), null)));
     assertEquals(1, dao.listMeasures(analysis4).size());
+
     long gateId = dao.insertQualityGate(
         null, java.util.UUID.randomUUID().toString(), "Gate",
         List.of(Map.of("metric", "bugs", "operator", "GREATER_THAN", "value", "0")),
@@ -7221,9 +7246,12 @@ public abstract class PersistenceApiContract {
     assertTrue(dao.findDefaultQualityGate().isEmpty());
     assertTrue(dao.listQualityGates(projectId).stream().anyMatch(gate -> gate.id() == gateId));
     assertTrue(dao.deleteQualityGate(gateId));
+
     assertEquals(4, dao.countAnalyses(projectId));
     assertEquals(2, dao.listBranches(projectId).size());
     assertTrue(dao.deleteProject(projectId));
     assertTrue(dao.findAnalysis(analysis1).isEmpty());
     assertEquals(0, dao.countIssues(projectId, null, null));
+  }
+
 }

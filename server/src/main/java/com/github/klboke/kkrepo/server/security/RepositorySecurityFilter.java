@@ -568,6 +568,7 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     }
     if (format == RepositoryFormat.ARCH && "PUT".equalsIgnoreCase(method)) {
       return List.of(PermissionAction.ADD, PermissionAction.EDIT);
+    }
     if (format == RepositoryFormat.OPENVSX
         && isOpenVsxPublishRoute(method, path)) {
       return List.of(PermissionAction.ADD);
@@ -634,6 +635,8 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       // The protocol handler rejects the malformed path before any write happens.
       return path;
     }
+  }
+
   private static boolean isOpenVsxPublishRoute(String method, String path) {
     return "POST".equalsIgnoreCase(method) && "api/-/publish".equals(path);
   }

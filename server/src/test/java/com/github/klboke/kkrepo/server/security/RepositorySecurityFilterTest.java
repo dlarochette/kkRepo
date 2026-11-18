@@ -1826,14 +1826,37 @@ class RepositorySecurityFilterTest {
 
     filter.doFilter(
         request("PUT", "/repository/arch-hosted/" + path),
+        new MockHttpServletResponse(),
+        chain);
+
+    assertEquals(1, chain.calls);
+    assertEquals(expected, decisions.permission.action());
+  }
+
+  @Test
   void openVsxGalleryPostRoutesRequireReadButPublishRequiresAdd() throws Exception {
     assertOpenVsxPostAction("vscode/gallery/extensionquery", PermissionAction.READ);
     assertOpenVsxPostAction("vscode/item", PermissionAction.READ);
     assertOpenVsxPostAction("api/-/publish", PermissionAction.ADD);
+  }
+
   private static void assertOpenVsxPostAction(String path, PermissionAction expected)
       throws Exception {
+    StubAuthenticationService authentication =
+        new StubAuthenticationService(Optional.of(subject("alice")));
+    RecordingDecisionService decisions = new RecordingDecisionService(AccessDecision.allow());
+    RepositorySecurityFilter filter = new RepositorySecurityFilter(
+        authentication,
+        decisions,
+        new FakeRepositoryDao(repository(
             "openvsx-hosted", RepositoryFormat.OPENVSX, RepositoryType.HOSTED)),
         new FakeAssetDao(Set.of()),
+        terraformRegistry(Set.of()),
+        new ForwardedHeaderPolicy(""),
+        new NexusLegacyUiCompatibility(false));
+    ChainState chain = new ChainState();
+
+    filter.doFilter(
         request("POST", "/repository/openvsx-hosted/" + path),
         new MockHttpServletResponse(),
         chain);

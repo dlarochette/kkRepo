@@ -335,6 +335,8 @@ public class RepositoryRequestMetricsFilter extends OncePerRequestFilter {
           ? "arch_package_publish" : "arch_package_download";
     }
     return "arch_request";
+  }
+
   private static String openVsxOperation(String path, String method) {
     if ("POST".equals(method) && path.equals("api/-/publish")) return "openvsx_publish";
     if (path.endsWith(".vsix") || path.contains("/file/")
@@ -343,20 +345,26 @@ public class RepositoryRequestMetricsFilter extends OncePerRequestFilter {
         || path.contains("/vscode/gallery/extensionquery")) return "openvsx_search";
     if (path.startsWith("api/") || path.startsWith("vscode/")) return "openvsx_metadata";
     return "openvsx_request";
+  }
+
   private static String wingetOperation(String path, String method) {
     String normalized = path.startsWith("api/") ? path.substring(4) : path;
     if ("information".equals(normalized)) {
       return "winget_information";
+    }
     if ("manifestSearch".equals(normalized)) {
       return "winget_manifest_search";
+    }
     if ("packageManifests".equals(normalized)) {
       return "POST".equals(method) ? "winget_manifest_publish" : "winget_manifest_request";
+    }
     if (normalized.startsWith("packageManifests/")) {
       return switch (method) {
         case "PUT" -> "winget_manifest_replace";
         case "DELETE" -> "winget_manifest_delete";
         default -> "winget_manifest_download";
       };
+    }
     return "winget_request";
   }
 

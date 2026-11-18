@@ -86,6 +86,8 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
       return Optional.of(
           "GET".equals(method) || "HEAD".equals(method)
               ? "nexus:lifecycle:read" : "nexus:lifecycle:update");
+    }
+
     // kkQuality enforces fine-grained project/repository permission itself (KkQualityAuthorizer),
     // so the filter only guarantees an authenticated subject for these paths.
     if (uri.startsWith("/api/kkquality")
