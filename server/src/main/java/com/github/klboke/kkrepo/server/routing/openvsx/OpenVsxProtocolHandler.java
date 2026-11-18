@@ -12,7 +12,7 @@ import com.github.klboke.kkrepo.server.openvsx.OpenVsxGroupService;
 import com.github.klboke.kkrepo.server.openvsx.OpenVsxHostedService;
 import com.github.klboke.kkrepo.server.openvsx.OpenVsxProxyService;
 import com.github.klboke.kkrepo.server.openvsx.OpenVsxQuery;
-import com.github.klboke.kkrepo.server.routing.RepositoryProtocolHandler;
+import com.github.klboke.kkrepo.server.routing.LegacyRepositoryProtocolHandler;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
@@ -37,7 +37,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 /** Focused handler for the Open VSX registry and VS Code gallery compatibility routes. */
 @Component
-public class OpenVsxProtocolHandler implements RepositoryProtocolHandler {
+public class OpenVsxProtocolHandler implements LegacyRepositoryProtocolHandler {
   private static final List<RepositoryProtocolRoute> ROUTES =
       java.util.Arrays.stream(com.github.klboke.kkrepo.core.RepositoryType.values())
           .flatMap(type -> List.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.POST,

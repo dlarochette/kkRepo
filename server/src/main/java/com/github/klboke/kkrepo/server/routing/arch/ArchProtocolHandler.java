@@ -8,7 +8,7 @@ import com.github.klboke.kkrepo.server.blob.TempBlobFiles;
 import com.github.klboke.kkrepo.server.http.ConditionalResponses;
 import com.github.klboke.kkrepo.server.maven.MavenExceptions;
 import com.github.klboke.kkrepo.server.maven.MavenResponse;
-import com.github.klboke.kkrepo.server.routing.RepositoryProtocolHandler;
+import com.github.klboke.kkrepo.server.routing.LegacyRepositoryProtocolHandler;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
@@ -31,7 +31,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 /** Focused handler for the flat pacman repository protocol. */
 @Component
-public class ArchProtocolHandler implements RepositoryProtocolHandler {
+public class ArchProtocolHandler implements LegacyRepositoryProtocolHandler {
   private static final List<RepositoryProtocolRoute> ROUTES =
       java.util.Arrays.stream(com.github.klboke.kkrepo.core.RepositoryType.values())
           .flatMap(type -> List.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.POST,

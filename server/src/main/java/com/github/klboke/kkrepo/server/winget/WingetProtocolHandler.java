@@ -17,7 +17,7 @@ import com.github.klboke.kkrepo.protocol.winget.WingetSearchRequest;
 import com.github.klboke.kkrepo.protocol.winget.WingetVersion;
 import com.github.klboke.kkrepo.protocol.winget.WingetVersionSummary;
 import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
-import com.github.klboke.kkrepo.server.routing.RepositoryProtocolHandler;
+import com.github.klboke.kkrepo.server.routing.LegacyRepositoryProtocolHandler;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRequest;
 import com.github.klboke.kkrepo.server.routing.RepositoryProtocolRoute;
 import jakarta.servlet.http.HttpServletRequest;
@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory;
 
 /** WinGet REST source API ({@code /api/...}) handler. */
 @Component
-public class WingetProtocolHandler implements RepositoryProtocolHandler {
+public class WingetProtocolHandler implements LegacyRepositoryProtocolHandler {
   private static final Logger log = LoggerFactory.getLogger(WingetProtocolHandler.class);
   private static final List<HttpMethod> ALL_METHODS = List.of(
       HttpMethod.GET, HttpMethod.HEAD, HttpMethod.POST, HttpMethod.PUT, HttpMethod.DELETE);
