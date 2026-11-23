@@ -8,9 +8,9 @@
     <link id="kkrepo-theme-stylesheet" rel="stylesheet" href="/browse/assets/themes/default.css?v=20260826-nexus-a11y-1">
     <script src="/login/assets/ui-theme.js?v=20260826-nexus-a11y-1"></script>
   <link rel="stylesheet" href="/browse/assets/ui-scrollbars.css?v=20260826-shared-scrollbars-4">
-    <link rel="stylesheet" href="/browse/assets/format-icons.css?v=20261118-format-icons-1">
-    <link rel="stylesheet" href="/browse/assets/lucide-icons.css?v=20261121-route-1">
-    <link rel="stylesheet" href="./assets/admin.css?v=20261123-offload-store-columns">
+<link rel="stylesheet" href="/browse/assets/format-icons.css?v=20261119-arch-1">
+<link rel="stylesheet" href="/browse/assets/lucide-icons.css?v=20261121-route-1">
+<link rel="stylesheet" href="./assets/admin.css?v=20261123-offload-store-columns">
     <link rel="stylesheet" href="/browse/assets/account-menu.css?v=20260824-ui-themes-3">
     <link rel="stylesheet" href="/browse/assets/global-component-search.css?v=20260819-topbar-control-height-1">
     <link rel="stylesheet" href="/login/assets/delete-confirmation.css?v=20261013-delete-confirmation-1">
@@ -652,6 +652,28 @@
                 <div class="form-actions">
                   <button class="create-button secondary" id="repository-alpine-rotate-key" type="button">Import / rotate signing key</button>
                   <button class="create-button secondary" id="repository-alpine-generate-key" type="button">Generate / rotate signing key</button>
+                </div>
+              </div>
+            </fieldset>
+            <fieldset class="form-grid" id="repository-arch-fields" hidden>
+              <legend>Pacman / Arch Linux signing</legend>
+              <div class="full-width">
+                <div class="muted-row" id="repository-arch-status">No signing key configured.</div>
+                <div class="form-actions">
+                  <button class="create-button secondary" id="repository-arch-refresh-status" type="button">Refresh status</button>
+                  <button class="create-button secondary" id="repository-arch-download-key" type="button">Download public key</button>
+                </div>
+                <label class="full-width">
+                  <span>OpenPGP private signing key</span>
+                  <textarea id="repository-arch-private-key" rows="5" autocomplete="off" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+                </label>
+                <label>
+                  <span>Key passphrase</span>
+                  <input id="repository-arch-key-passphrase" type="password" autocomplete="new-password">
+                </label>
+                <div class="form-actions">
+                  <button class="create-button secondary" id="repository-arch-rotate-key" type="button">Import / rotate signing key</button>
+                  <button class="create-button secondary" id="repository-arch-generate-key" type="button">Generate / rotate signing key</button>
                 </div>
               </div>
             </fieldset>
