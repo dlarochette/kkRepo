@@ -21,6 +21,7 @@ import com.github.klboke.kkrepo.protocol.maven.policy.WritePolicy;
 import com.github.klboke.kkrepo.server.maven.HttpRemoteFetcher;
 import com.github.klboke.kkrepo.server.maven.MavenResponse;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntime;
+import com.github.klboke.kkrepo.server.proxy.RepositoryOutboundBlock.Blocked;
 import com.github.klboke.kkrepo.server.maven.RepositoryRuntimeRegistry;
 import java.io.ByteArrayInputStream;
 import java.io.FilterInputStream;
@@ -366,6 +367,67 @@ public class AnsibleGalaxyService {
     body.put("updated_at", iso(detail.updatedAt()));
     body.put("metadata", collectionMetadata(detail));
     return jsonResponse(body, 200, headOnly, detail.updatedAt());
+  }
+
+  /** Version list served from live versions plus staged collection versions. */
+  MavenResponse stagedVersionList(
+      RepositoryRuntime runtime,
+      String namespace,
+      String name,
+      String baseUrl,
+      List<String> stagedVersions,
+      int limit,
+      int offset,
+      boolean headOnly) {
+    java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>();
+    try {
+      merged.addAll(sortedVersionNames(runtime, namespace, name));
+    } catch (AnsibleGalaxyExceptions.NotFound ignored) {
+      // A collection can appear entirely through staging.
+    }
+    merged.addAll(stagedVersions);
+    List<String> all = AnsibleGalaxyVersions.sortDescending(merged);
+    if (all.isEmpty()) {
+      throw new AnsibleGalaxyExceptions.NotFound("Collection not found");
+    }
+    int from = Math.min(offset, all.size());
+    int to = Math.min(all.size(), from + limit);
+    List<Map<String, Object>> data = all.subList(from, to).stream()
+        .map(version -> Map.<String, Object>of(
+            "version", version,
+            "href", versionUrl(baseUrl, namespace, name, version)))
+        .toList();
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("meta", Map.of("count", all.size()));
+    body.put("data", data);
+    body.put("links", Map.of("next", to < all.size()
+        ? clientPaginationPath(versionsUrl(baseUrl, namespace, name), limit, to)
+        : ""));
+    return jsonResponse(body, 200, headOnly, null);
+  }
+
+  /** Version detail for a staged collection, using metadata captured at staging time. */
+  MavenResponse stagedVersionDetail(
+      RepositoryRuntime runtime,
+      String namespace,
+      String name,
+      String version,
+      String baseUrl,
+      String filename,
+      String sha256,
+      long size,
+      Map<String, Object> metadata,
+      Map<String, Object> dependencies,
+      String requiresAnsible,
+      Instant publishedAt,
+      boolean headOnly) {
+    Instant created = publishedAt == null ? Instant.now() : publishedAt;
+    ResolvedVersionMetadata resolved = new ResolvedVersionMetadata(
+        null, runtime.id(), version, filename, sha256, size,
+        metadata == null ? Map.of() : metadata,
+        dependencies == null ? Map.of() : dependencies,
+        requiresAnsible, 0, created, created);
+    return jsonResponse(versionDetail(resolved, baseUrl, namespace, name), 200, headOnly, created);
   }
 
   private MavenResponse versionListResponse(
@@ -762,6 +824,8 @@ public class AnsibleGalaxyService {
         } finally {
           AnsibleCollectionArchiveInspector.delete(inspected.file());
         }
+      } catch (Blocked blocked) {
+        throw new AnsibleGalaxyExceptions.NotFound("Collection artifact was not found in cache");
       } catch (IOException e) {
         throw new AnsibleGalaxyExceptions.BadUpstream(
             "Failed downloading upstream Ansible collection", e);
@@ -889,6 +953,10 @@ public class AnsibleGalaxyService {
             instantText(result.lastModified()), cacheUntil, checkedAt, null, null, document,
             revision, checkedAt));
         return document;
+      } catch (Blocked blocked) {
+        return existing.filter(state -> !state.upstreamIdentity().isEmpty())
+            .map(AnsibleGalaxyRegistryDao.ProxyVersionState::upstreamIdentity)
+            .orElseThrow(() -> new AnsibleGalaxyExceptions.NotFound("Collection metadata was not found in cache"));
       } catch (IOException e) {
         if (existing.isPresent() && !existing.get().upstreamIdentity().isEmpty()) {
           return existing.get().upstreamIdentity();
@@ -960,6 +1028,8 @@ public class AnsibleGalaxyService {
             versions);
       }
       return versions;
+    } catch (Blocked blocked) {
+      return stale;
     } catch (AnsibleGalaxyExceptions.NotFound notFound) {
       Instant checkedAt = Instant.now();
       if (existing.isPresent() && stale.isEmpty() && existing.get().versionCount() == 0) {
@@ -983,7 +1053,7 @@ public class AnsibleGalaxyService {
   }
 
   private List<String> fetchUpstreamVersionNames(
-      RepositoryRuntime runtime, String namespace, String name) {
+      RepositoryRuntime runtime, String namespace, String name) throws Blocked {
     LinkedHashSet<String> versions = new LinkedHashSet<>();
     Set<String> visitedPages = new HashSet<>();
     String next = proxyV3Url(runtime, upstreamVersionsPath(namespace, name) + "?limit=1000");
@@ -1012,7 +1082,7 @@ public class AnsibleGalaxyService {
   }
 
   private Map<String, Object> fetchProxyVersionPage(
-      RepositoryRuntime runtime, String url) {
+      RepositoryRuntime runtime, String url) throws Blocked {
     HttpRemoteFetcher.Request request = HttpRemoteFetcher.Request.get(url)
         .withTimeoutProfile(HttpRemoteFetcher.TimeoutProfile.METADATA)
         .withAccept("application/json")
@@ -1026,6 +1096,8 @@ public class AnsibleGalaxyService {
             "Upstream Galaxy version list returned HTTP " + result.status());
       }
       return readProjectedJsonBounded(result.body(), VERSIONS_SENTINEL);
+    } catch (Blocked blocked) {
+      throw blocked;
     } catch (IOException error) {
       throw new AnsibleGalaxyExceptions.BadUpstream(
           "Failed fetching upstream Galaxy version list", error);

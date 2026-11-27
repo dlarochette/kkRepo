@@ -111,6 +111,16 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
     if (uri.startsWith("/internal/blob-stores")) {
       return internalBlobStorePermission(method, uri);
     }
+    if (uri.equals("/internal/staging") || uri.startsWith("/internal/staging/")
+        || uri.equals("/service/rest/v1/staging") || uri.startsWith("/service/rest/v1/staging/")) {
+      return stagingPermission(method, uri);
+    }
+    if (uri.equals("/internal/proxy-settings") || uri.equals("/internal/download-offload")) {
+      return Optional.of(("GET".equals(method) || "HEAD".equals(method)) ? "nexus:settings:read" : "nexus:settings:update");
+    }
+    if (uri.startsWith("/internal/repositories/") && uri.endsWith("/outbound-proxy/test")) {
+      return Optional.of("nexus:settings:update");
+    }
     if (uri.equals("/internal/ui-settings")) {
       return "GET".equals(method)
           ? Optional.empty()
@@ -199,6 +209,24 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
     return Optional.of("nexus:blobstores:" + crudAction(method));
   }
 
+  private Optional<String> stagingPermission(String method, String uri) {
+    if ("GET".equals(method) || "HEAD".equals(method)) {
+      return Optional.of(uri.endsWith("/metrics")
+          ? "nexus:staging:admin" : "nexus:staging:read");
+    }
+    if ("DELETE".equals(method)) {
+      return Optional.of("nexus:staging:admin");
+    }
+    // commit runs preflight and promotion in one call, so it is a promotion operation.
+    if (uri.endsWith("/commit")
+        || uri.endsWith("/preflight")
+        || uri.endsWith("/promote")
+        || uri.endsWith("/approve")) {
+      return Optional.of("nexus:staging:promote");
+    }
+    return Optional.of("nexus:staging:create");
+  }
+
   private Optional<String> internalSecurityPermission(String method, String uri) {
     String path = uri.substring("/internal/security/".length());
     if (path.equals("bootstrap") || path.equals("bootstrap/admin") || path.equals("context")) {
@@ -217,7 +245,8 @@ public class SecurityManagementFilter extends OncePerRequestFilter {
       return Optional.of("nexus:settings:read");
     }
     if (path.equals("scanning") || path.startsWith("scanning/")) {
-      if (path.equals("scanning/waivers") && "POST".equals(method)) {
+      if ((path.equals("scanning/waivers") || path.equals("scanning/waivers/package"))
+          && "POST".equals(method)) {
         return Optional.of("nexus:security-scanning-waivers:create");
       }
       if (path.startsWith("scanning/waivers/") && "DELETE".equals(method)) {

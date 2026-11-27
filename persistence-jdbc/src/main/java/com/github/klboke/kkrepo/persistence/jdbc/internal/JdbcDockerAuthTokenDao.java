@@ -31,24 +31,59 @@ public class JdbcDockerAuthTokenDao implements com.github.klboke.kkrepo.persiste
       String userId,
       String realmId,
       Long apiKeyId,
+      String apiKeyGeneration,
       TokenKind tokenKind,
       List<Map<String, Object>> scopes,
       Instant expiresAt) {
+    insert(tokenHash, source, userId, realmId, apiKeyId, apiKeyGeneration, tokenKind, scopes,
+        null, expiresAt);
+  }
+
+  public void insert(
+      String tokenHash,
+      String source,
+      String userId,
+      String realmId,
+      Long apiKeyId,
+      TokenKind tokenKind,
+      List<Map<String, Object>> scopes,
+      String stagingSession,
+      Instant expiresAt) {
+    insert(tokenHash, source, userId, realmId, apiKeyId, null, tokenKind, scopes,
+        stagingSession, expiresAt);
+  }
+
+  public void insert(
+      String tokenHash,
+      String source,
+      String userId,
+      String realmId,
+      Long apiKeyId,
+      String apiKeyGeneration,
+      TokenKind tokenKind,
+      List<Map<String, Object>> scopes,
+      String stagingSession,
+      Instant expiresAt) {
     TokenKind storedKind = tokenKind == null ? TokenKind.USER : tokenKind;
+    Map<String, Object> tokenData = new java.util.LinkedHashMap<>();
+    tokenData.put("tokenKind", storedKind.name());
+    tokenData.put("scopes", scopes == null ? List.of() : scopes);
+    if (stagingSession != null && !stagingSession.isBlank()) {
+      tokenData.put("stagingSession", stagingSession);
+    }
     jdbcTemplate.update("""
         INSERT INTO docker_auth_token
           (token_hash, subject_source, subject_user_id, subject_realm_id,
-           subject_api_key_id, scopes_json, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+           subject_api_key_id, subject_api_key_generation, scopes_json, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         normalize(tokenHash),
         source,
         userId,
         realmId,
         apiKeyId,
-        jsonColumns.parameter(Map.of(
-            "tokenKind", storedKind.name(),
-            "scopes", scopes == null ? List.of() : scopes)),
+        apiKeyGeneration,
+        jsonColumns.parameter(tokenData),
         Timestamp.from(expiresAt));
   }
 
@@ -68,9 +103,11 @@ public class JdbcDockerAuthTokenDao implements com.github.klboke.kkrepo.persiste
               rs.getString("subject_user_id"),
               rs.getString("subject_realm_id"),
               rs.getObject("subject_api_key_id") == null ? null : rs.getLong("subject_api_key_id"),
+              rs.getString("subject_api_key_generation"),
               tokenKind(tokenData),
               tokenData,
-              rs.getTimestamp("expires_at").toInstant());
+              rs.getTimestamp("expires_at").toInstant(),
+              stagingSession(tokenData));
         },
         normalize(tokenHash),
         Timestamp.from(now)).stream().findFirst();
@@ -145,6 +182,11 @@ public class JdbcDockerAuthTokenDao implements com.github.klboke.kkrepo.persiste
         tokenHashes.toArray());
   }
 
+  @Override
+  public int deleteByApiKeyId(long apiKeyId) {
+    return jdbcTemplate.update("DELETE FROM docker_auth_token WHERE subject_api_key_id = ?", apiKeyId);
+  }
+
   private static String normalize(String tokenHash) {
     if (tokenHash == null || tokenHash.length() != 64) {
       throw new IllegalArgumentException("tokenHash must be SHA-256 hex");
@@ -162,6 +204,11 @@ public class JdbcDockerAuthTokenDao implements com.github.klboke.kkrepo.persiste
     } catch (IllegalArgumentException ignored) {
       return TokenKind.USER;
     }
+  }
+
+  private static String stagingSession(Map<String, Object> tokenData) {
+    Object value = tokenData.get("stagingSession");
+    return value == null || value.toString().isBlank() ? null : value.toString();
   }
 
 }

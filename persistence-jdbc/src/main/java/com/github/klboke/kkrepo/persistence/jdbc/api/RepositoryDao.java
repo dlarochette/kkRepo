@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.persistence.jdbc.api;
 
+import com.github.klboke.kkrepo.core.RepositoryType;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.RepositoryRecord;
 import java.time.Instant;
 import java.util.List;
@@ -11,6 +12,21 @@ public interface RepositoryDao {
 
   Optional<RepositoryRecord> findById(long id);
 
+  /**
+   * Loads several repositories in one query. Callers that display or authorize a list of targets
+   * must use this instead of resolving each id separately.
+   */
+  default List<RepositoryRecord> findByIds(java.util.Collection<Long> ids) {
+    if (ids == null || ids.isEmpty()) {
+      return List.of();
+    }
+    return ids.stream()
+        .distinct()
+        .map(this::findById)
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
   Optional<RepositoryRecord> findByName(String name);
 
   /** Lock an existing configuration row until the caller's transaction commits. */
@@ -20,6 +36,11 @@ public interface RepositoryDao {
   Optional<Instant> findUpdatedAt(long id);
 
   List<RepositoryRecord> list();
+
+  List<DockerConnectorRepository> listDockerConnectorRepositories();
+
+  record DockerConnectorRepository(long id, String name, RepositoryType type, Map<String, Object> settings) {
+  }
 
   void update(RepositoryRecord record);
 

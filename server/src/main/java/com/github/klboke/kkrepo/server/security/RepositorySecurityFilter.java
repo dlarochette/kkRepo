@@ -68,6 +68,8 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
   private static final ComposerPathParser COMPOSER_PATH_PARSER = new ComposerPathParser();
   private static final TerraformPathParser TERRAFORM_PATH_PARSER = new TerraformPathParser();
   private final SecurityAuthenticationService authenticationService;
+  private com.github.klboke.kkrepo.server.staging.StagingCredentialService stagingCredentials;
+  private com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget;
   private final AccessDecisionService accessDecisionService;
   private final RepositoryRuntimeRegistry repositoryRegistry;
   private final AssetDao assetDao;
@@ -123,6 +125,18 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     this(authenticationService, accessDecisionService,
         new RepositoryRuntimeRegistry(repositoryDao, 0), assetDao, terraformRegistryDao,
         forwardedHeaderPolicy, legacyUi);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setGroupWriteTargetService(
+      com.github.klboke.kkrepo.server.repositories.GroupWriteTargetService groupWriteTarget) {
+    this.groupWriteTarget = groupWriteTarget;
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setStagingCredentialService(
+      com.github.klboke.kkrepo.server.staging.StagingCredentialService stagingCredentials) {
+    this.stagingCredentials = stagingCredentials;
   }
 
   @Override
@@ -256,8 +270,17 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       }
     }
     request.setAttribute(AuthenticatedSubject.REQUEST_ATTRIBUTE, authenticated.get());
+    if (stagingCredentials != null) {
+      stagingCredentials.bind(request, authenticated.get());
+    }
 
-    AccessDecision decision = decide(authenticated.get(), repository.get(), target);
+    RepositoryRecord permissionRepository = repository.get();
+    if (groupWriteTarget != null && isWriteMethod(request.getMethod())
+        && permissionRepository.type() == RepositoryType.GROUP) {
+      permissionRepository = groupWriteTarget.writeTargetRecord(permissionRepository)
+          .orElse(permissionRepository);
+    }
+    AccessDecision decision = decide(authenticated.get(), permissionRepository, target);
     if (!decision.allowed()) {
       if (authenticatedAnonymously) {
         challenge(request, response, repository.get(), target);
@@ -289,6 +312,11 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       }
     }
     filterChain.doFilter(request, response);
+  }
+
+  private static boolean isWriteMethod(String method) {
+    return "PUT".equalsIgnoreCase(method) || "POST".equalsIgnoreCase(method)
+        || "DELETE".equalsIgnoreCase(method) || "PATCH".equalsIgnoreCase(method);
   }
 
   private static String canonicalRepositoryPath(RepositoryFormat format, String path) {
@@ -328,13 +356,8 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
 
   private List<PermissionAction> actionsForDecision(
       RepositoryRecord repository, RepositoryRequest target) {
-    if ((repository.format() == RepositoryFormat.SWIFT
-        || repository.format() == RepositoryFormat.ANSIBLEGALAXY
-        || repository.format() == RepositoryFormat.APT
-        || repository.format() == RepositoryFormat.ALPINE
-        || repository.format() == RepositoryFormat.R)
-        && target.componentUploadRoute()) {
-      return List.of(PermissionAction.ADD);
+    if (target.componentUploadRoute()) {
+      return List.of(ComponentUploadAccess.action(repository.format()));
     }
     if (repository.format() == RepositoryFormat.ANSIBLEGALAXY
         && isAnsibleImportTaskRoute(target.method(), target.path())) {
@@ -392,14 +415,15 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
 
   private Optional<RepositoryRequest> resolve(HttpServletRequest request) {
     String method = request.getMethod();
-    String uri = stripContextPath(request);
+    String uri = SecurityRequestPath.rawPath(request);
     if (uri.startsWith(RepositoryUrlPrefix.path(request))) {
       return repositoryRoute(method, uri, RepositoryUrlPrefix.path(request));
     }
     if (uri.startsWith("/service/rest/repository/browse/")) {
       return browseRoute(method, uri);
     }
-    if ("POST".equalsIgnoreCase(method) && uri.equals("/service/rest/v1/components")) {
+    String managementPath = SecurityRequestPath.matchingPath(request);
+    if ("POST".equalsIgnoreCase(method) && managementPath.equals("/service/rest/v1/components")) {
       String repository = request.getParameter("repository");
       if (repository == null || repository.isBlank()) {
         return Optional.empty();
@@ -407,10 +431,10 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
       return Optional.of(new RepositoryRequest(
           repository.trim(), "", method, List.of(PermissionAction.EDIT), false, true));
     }
-    Optional<String> legacyUploadRepository = legacyUi.internalUiUploadRepository(uri);
+    Optional<String> legacyUploadRepository = legacyUi.internalUiUploadRepository(managementPath);
     if (legacyUploadRepository.isPresent()) {
       return Optional.of(new RepositoryRequest(
-          decode(legacyUploadRepository.get()),
+          legacyUploadRepository.get(),
           "",
           method,
           List.of(PermissionAction.EDIT),
@@ -582,15 +606,6 @@ public class RepositorySecurityFilter extends OncePerRequestFilter {
     return "-/npm/v1/security/audits".equals(path)
         || "-/npm/v1/security/audits/quick".equals(path)
         || "-/npm/v1/security/advisories/bulk".equals(path);
-  }
-
-  private String stripContextPath(HttpServletRequest request) {
-    String uri = request.getRequestURI();
-    String contextPath = request.getContextPath();
-    if (contextPath != null && !contextPath.isBlank() && uri.startsWith(contextPath)) {
-      return uri.substring(contextPath.length());
-    }
-    return uri;
   }
 
   private void challenge(

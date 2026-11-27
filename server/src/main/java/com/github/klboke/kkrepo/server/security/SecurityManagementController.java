@@ -1,5 +1,6 @@
 package com.github.klboke.kkrepo.server.security;
 
+import com.github.klboke.kkrepo.server.security.SecurityPayloads.ExternalRoleMapping;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.ApiKeyCommand;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.ApiKeyView;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.AdminBootstrapCommand;
@@ -135,7 +136,14 @@ public class SecurityManagementController {
         command.readOnly(),
         command.privileges(),
         command.roles(),
-        command.attributes()));
+        command.attributes(),
+        command.externalMappings()));
+  }
+
+  @PutMapping("/roles/{roleId}/external-mappings")
+  public RoleView updateExternalRoleMappings(
+      @PathVariable("roleId") String roleId, @RequestBody List<ExternalRoleMapping> mappings) {
+    return securityService.saveExternalRoleMappings(roleId, mappings);
   }
 
   @DeleteMapping("/roles/{roleId}")
@@ -232,7 +240,8 @@ public class SecurityManagementController {
       HttpServletRequest request,
       @RequestBody(required = false) ApiKeyCommand command) {
     AuthenticatedSubject subject = currentSubject(request);
-    return securityService.createApiKeyForOwner(subject.source(), subject.userId(), command);
+    return securityService.createApiKeyForOwner(
+        subject.source(), subject.userId(), command, subject.apiKeyId() != null);
   }
 
   @PostMapping("/api-keys/current/{id}/reset")
@@ -240,7 +249,8 @@ public class SecurityManagementController {
       HttpServletRequest request,
       @PathVariable("id") long id) {
     AuthenticatedSubject subject = currentSubject(request);
-    return securityService.resetApiKeyForOwner(id, subject.source(), subject.userId());
+    return securityService.resetApiKeyForOwner(
+        id, subject.source(), subject.userId(), subject.apiKeyId() != null);
   }
 
   @DeleteMapping("/api-keys/{id}")
@@ -254,6 +264,7 @@ public class SecurityManagementController {
     securityService.deleteApiKeyForOwner(id, subject.source(), subject.userId());
   }
 
+  /** A leaked key or user token must not reveal or rotate the owner's user token. */
   private AuthenticatedSubject currentSubject(HttpServletRequest request) {
     Object subject = request.getAttribute(AuthenticatedSubject.REQUEST_ATTRIBUTE);
     if (subject instanceof AuthenticatedSubject authenticated

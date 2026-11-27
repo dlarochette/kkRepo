@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.klboke.kkrepo.auth.PermissionAction;
 import com.github.klboke.kkrepo.auth.PermissionSubject;
 import com.github.klboke.kkrepo.auth.RepositoryPermission;
@@ -21,6 +22,8 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityUserRecord;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.AdminBootstrapCommand;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.AnonymousSettingsCommand;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.ApiKeyCommand;
+import com.github.klboke.kkrepo.server.security.SecurityPayloads.ApiKeyView;
+import com.github.klboke.kkrepo.server.security.SecurityPayloads.ExternalRoleMapping;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.LdapSettingsCommand;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.PrivilegeCommand;
 import com.github.klboke.kkrepo.server.security.SecurityPayloads.RoleCommand;
@@ -34,6 +37,94 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class SecurityManagementServiceValidationTest {
+
+  @Test
+  void storesProviderScopedMappingsAndPreservesLastSignInOnUserEdit() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    dao.upsertRealm(new SecurityRealmRecord(1L, "oidc", "OIDC", "OIDC", true, 20,
+        Map.of("legacyRoleMatching", false)));
+    dao.upsertRealm(new SecurityRealmRecord(2L, "ldap", "LDAP", "LDAP", true, 10,
+        Map.of("legacyRoleMatching", false)));
+    SecurityManagementService service = new SecurityManagementService(dao);
+    var mapping = new ExternalRoleMapping("oidc", "engineering");
+    var created = service.saveRole(new RoleCommand("reader", null, "Reader", null, false,
+        List.of(), List.of(), Map.of(), List.of(mapping)));
+    assertEquals(List.of(mapping), created.externalMappings());
+
+    var groups = Map.<String, Object>of("groups", List.of("engineering", "reader"));
+    var oidc = service.saveUser(new UserCommand("OIDC", "alice", null, null, null, null, null,
+        "ACTIVE", "subject-1", List.of(), Map.of("groups", groups.get("groups"),
+            "externalRoleRealm", "oidc")));
+    var ldap = service.saveUser(new UserCommand("LDAP", "alice", null, null, null, null, null,
+        "ACTIVE", "subject-2", List.of(), Map.of("groups", groups.get("groups"),
+            "externalRoleRealm", "ldap")));
+    assertEquals(List.of("reader"), oidc.externalRoles());
+    assertEquals(List.of(), ldap.externalRoles());
+
+    var edited = service.saveUser(new UserCommand("OIDC", "alice", "Alice", null, null, null,
+        null, "ACTIVE", null, List.of(), null));
+    assertEquals("subject-1", edited.externalId());
+    assertEquals(List.of(), edited.roles());
+    assertEquals(List.of("reader"), edited.externalRoles());
+
+    service.deleteRole("reader");
+    service.saveRole(new RoleCommand("reader", null, "Reader", null, false,
+        List.of(), List.of(), Map.of()));
+    assertEquals(List.of(), service.findUser("OIDC", "alice").orElseThrow().externalRoles());
+  }
+
+  @Test
+  void validatesExternalMappingsAndKeepsBuiltInRoleDefinitionReadOnly() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    seedAdminRole(dao);
+    dao.upsertRealm(new SecurityRealmRecord(1L, "oidc", "OIDC", "OIDC", true, 20, Map.of()));
+    SecurityManagementService service = new SecurityManagementService(dao);
+    var mapping = new ExternalRoleMapping("oidc", "operations");
+    assertThrows(SecurityValidationException.class, () -> service.saveExternalRoleMappings("missing", List.of(mapping)));
+    assertThrows(SecurityValidationException.class, () -> service.saveExternalRoleMappings("nx-admin", null));
+    assertThrows(SecurityValidationException.class, () -> service.saveExternalRoleMappings("nx-admin",
+        List.of(new ExternalRoleMapping("local", "operations"))));
+    assertThrows(SecurityValidationException.class,
+        () -> service.saveExternalRoleMappings("nx-admin", List.of(mapping, mapping)));
+    assertThrows(SecurityValidationException.class, () -> service.saveExternalRoleMappings("nx-admin",
+        List.of(new ExternalRoleMapping("oidc", "x".repeat(256)))));
+
+    var saved = service.saveExternalRoleMappings("nx-admin", List.of(mapping));
+    assertEquals(true, saved.readOnly());
+    assertEquals(List.of("nx-all"), saved.privileges());
+    assertEquals(List.of(mapping), saved.externalMappings());
+  }
+
+  @Test
+  void providerSettingsPreserveMappingsAndValidateLegacyMatchingFlag() throws Exception {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    dao.upsertRealm(new SecurityRealmRecord(1L, "ldap", "LDAP", "LDAP", true, 10, Map.of(
+        "url", "ldaps://ldap.example.com",
+        ExternalRoleMappings.MAPPINGS, Map.of("reader", List.of("engineering")))));
+    dao.role(role("reader", false));
+    SecurityManagementService service = new SecurityManagementService(dao);
+    ObjectMapper mapper = new ObjectMapper();
+
+    var invalid = mapper.readValue("""
+        {"attributes":{"legacyRoleMatching":"false"}}
+        """, LdapSettingsCommand.class);
+    assertThrows(SecurityValidationException.class, () -> service.saveLdapSettings(invalid));
+    var valid = mapper.readValue("""
+        {"enabled":false,"attributes":{"legacyRoleMatching":false,"externalRoleMappings":{"nx-admin":["engineering"]}}}
+        """, LdapSettingsCommand.class);
+    assertEquals(false, service.saveLdapSettings(valid).attributes().get("legacyRoleMatching"));
+
+    var external = new UserCommand("LDAP", "alice", null, null, null, null, null, "ACTIVE",
+        "uid=alice", List.of(), Map.of("groups", " engineering ", "externalRoleRealm", "ldap"));
+    assertEquals(List.of(), service.saveUser(external).externalRoles());
+    assertEquals(List.of(new ExternalRoleMapping("ldap", "engineering")),
+        service.findRole("reader").orElseThrow().externalMappings());
+    var enabled = mapper.readValue("""
+        {"enabled":true}
+        """, LdapSettingsCommand.class);
+    assertEquals(false, service.saveLdapSettings(enabled).attributes().get("legacyRoleMatching"));
+    assertEquals(List.of("reader"), service.findUser("LDAP", "alice").orElseThrow().externalRoles());
+  }
 
   @Test
   void saveUserRejectsMissingRoleReference() {
@@ -632,7 +723,7 @@ class SecurityManagementServiceValidationTest {
   }
 
   @Test
-  void createApiKeyForOwnerReusesRecoverableExistingToken() {
+  void packageClientLoginReusesRecoverableExistingToken() {
     FakeSecurityDao dao = new FakeSecurityDao();
     SecurityManagementService service = new SecurityManagementService(dao);
 
@@ -640,7 +731,7 @@ class SecurityManagementServiceValidationTest {
         "Local",
         "alice",
         new ApiKeyCommand("NpmToken", null, null, "npm login", null, List.of(), null, null, null));
-    var second = service.createApiKeyForOwner(
+    var second = service.getOrCreateApiKeyForLogin(
         "Local",
         "alice",
         new ApiKeyCommand("NpmToken", null, null, "npm login", null, List.of(), null, null, null));
@@ -655,6 +746,179 @@ class SecurityManagementServiceValidationTest {
   }
 
   @Test
+  void userTokenIsAUserCodeAndPasscodePairHashedAsAWhole() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+
+    var created = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand("usertoken", null, null, "docker", null, List.of(), null, null, null));
+    var reset = service.resetApiKeyForOwner(created.apiKey().id(), "OIDC", "carol");
+
+    String token = created.token();
+    String userCode = token.substring(0, token.indexOf(':'));
+    assertEquals(UserTokens.DOMAIN, created.apiKey().domain());
+    assertEquals(true, UserTokens.matches(userCode, token.substring(userCode.length() + 1)));
+    assertEquals(userCode, created.apiKey().tokenPrefix());
+    ApiKeyRecord stored = dao.findApiKey(UserTokens.DOMAIN, "OIDC", "carol").orElseThrow();
+    assertEquals(SecurityHashing.sha256(reset.token()), stored.apiKeyHash());
+    assertNotEquals(token, reset.token());
+    // One user token per user: self-service creation does not reveal it again (#559).
+    assertThrows(ApiKeyAlreadyExistsException.class, () -> service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand(UserTokens.DOMAIN, null, null, "docker", null, List.of(), null, null, null)));
+  }
+
+  @Test
+  void keyAuthenticatedCallersCannotCreateRevealOrRotateUserTokensInAnySpelling() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+    var token = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand(UserTokens.DOMAIN, null, null, "docker", null, List.of(), null, null, null));
+
+    for (String domain : List.of("UserToken", "usertoken", "UserToken ", " USERTOKEN\t")) {
+      var error = assertThrows(org.springframework.web.server.ResponseStatusException.class, () ->
+          service.createApiKeyForOwner("OIDC", "carol",
+              new ApiKeyCommand(domain, null, null, null, null, List.of(), null, null, null), true));
+      assertEquals(403, error.getStatusCode().value(), domain);
+    }
+    var reset = assertThrows(org.springframework.web.server.ResponseStatusException.class, () ->
+        service.resetApiKeyForOwner(token.apiKey().id(), "OIDC", "carol", true));
+    assertEquals(403, reset.getStatusCode().value());
+    assertEquals(SecurityHashing.sha256(token.token()),
+        dao.findApiKey(UserTokens.DOMAIN, "OIDC", "carol").orElseThrow().apiKeyHash());
+
+    // Ordinary API keys stay manageable with a key.
+    var nexus = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand("nexus", null, null, null, null, List.of(), null, null, null), true);
+    assertNotEquals(nexus.token(),
+        service.resetApiKeyForOwner(nexus.apiKey().id(), "OIDC", "carol", true).token());
+  }
+
+  @Test
+  void administrativePathsAlsoRefuseUserTokenManagementToKeyAuthenticatedCallers() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+    var token = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand(UserTokens.DOMAIN, null, null, "docker", null, List.of(), null, null, null));
+    ApiKeyCommand adminCreate =
+        new ApiKeyCommand(" usertoken", "OIDC", "carol", null, null, List.of(), null, null, null);
+    ApiKeyCommand adminImport = new ApiKeyCommand(UserTokens.DOMAIN, "Local", "mallory", null, null,
+        List.of(), null, null, SecurityHashing.sha256("ABCDEFGHJK:" + "a".repeat(43)));
+
+    // An admin authenticated with an API key: neither reveal nor reset nor import a user token.
+    withCaller(17L, () -> {
+      for (ApiKeyCommand command : List.of(adminCreate, adminImport)) {
+        var error = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+            () -> service.createApiKey(command));
+        assertEquals(403, error.getStatusCode().value());
+      }
+      var reset = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+          () -> service.resetApiKey(token.apiKey().id()));
+      assertEquals(403, reset.getStatusCode().value());
+      assertTrue(service.createApiKey(
+          new ApiKeyCommand("nexus", "OIDC", "carol", null, null, List.of(), null, null, null)).token() != null);
+    });
+    assertEquals(SecurityHashing.sha256(token.token()),
+        dao.findApiKey(UserTokens.DOMAIN, "OIDC", "carol").orElseThrow().apiKeyHash());
+    assertTrue(dao.findApiKey(UserTokens.DOMAIN, "Local", "mallory").isEmpty());
+
+  }
+
+  @Test
+  void administratorsCanViewAndRevokeButNeverObtainOrSetAnotherUsersToken() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+    var token = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand(UserTokens.DOMAIN, null, null, "docker", null, List.of(), null, null, null));
+    String chosenPair = "ABCDEFGHJK:" + "a".repeat(43);
+
+    // A signed-in administrator: no reveal of carol's token, no issue for mallory, no import, no reset.
+    withCaller(null, () -> {
+      for (ApiKeyCommand command : List.of(
+          new ApiKeyCommand(" usertoken", "OIDC", "carol", null, null, List.of(), null, null, null),
+          new ApiKeyCommand(UserTokens.DOMAIN, "Local", "mallory", null, null, List.of(), null, null, null),
+          new ApiKeyCommand(UserTokens.DOMAIN, "OIDC", "carol", null, null, List.of(), null, null,
+              SecurityHashing.sha256(chosenPair)),
+          new ApiKeyCommand(UserTokens.DOMAIN, "Local", "mallory", null, null, List.of(), null, null,
+              SecurityHashing.sha256(chosenPair)))) {
+        var error = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+            () -> service.createApiKey(command), command.ownerUserId());
+        assertEquals(403, error.getStatusCode().value());
+      }
+      var reset = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+          () -> service.resetApiKey(token.apiKey().id()));
+      assertEquals(403, reset.getStatusCode().value());
+
+      // Metadata stays visible: the user code identifies the token, the secret is never part of it.
+      ApiKeyView listed = service.findApiKey(token.apiKey().id()).orElseThrow();
+      assertEquals(UserTokens.DOMAIN, listed.domain());
+      assertEquals(UserTokens.userCode(token.token()), listed.tokenPrefix());
+      // Ordinary keys keep the existing administrative behaviour.
+      var nexus = service.createApiKey(
+          new ApiKeyCommand("nexus", "OIDC", "carol", null, null, List.of(), null, null, null));
+      assertNotEquals(nexus.token(), service.resetApiKey(nexus.apiKey().id()).token());
+    });
+    assertEquals(SecurityHashing.sha256(token.token()),
+        dao.findApiKey(UserTokens.DOMAIN, "OIDC", "carol").orElseThrow().apiKeyHash());
+    assertTrue(dao.findApiKey(UserTokens.DOMAIN, "Local", "mallory").isEmpty());
+
+    // The administrator revokes it; the owner generates a replacement from their own session.
+    withCaller(null, () -> service.deleteApiKey(token.apiKey().id()));
+    assertTrue(dao.findApiKey(UserTokens.DOMAIN, "OIDC", "carol").isEmpty());
+    var replacement = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand(UserTokens.DOMAIN, null, null, "docker", null, List.of(), null, null, null));
+    assertNotEquals(token.token(), replacement.token());
+  }
+
+  @Test
+  void apiKeyDomainsFollowOneAsciiIdentityRule() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+    // Spellings a database collation could fold into another domain never reach storage.
+    for (String domain : List.of("UsérToken", "\uFF35serToken", "User\u00ADToken", "Npm Token", "x".repeat(101))) {
+      assertThrows(SecurityValidationException.class, () -> service.createApiKey(
+          new ApiKeyCommand(domain, "OIDC", "carol", null, null, List.of(), null, null, null)), domain);
+      assertThrows(SecurityValidationException.class, () -> service.createApiKeyForOwner("OIDC", "carol",
+          new ApiKeyCommand(domain, null, null, null, null, List.of(), null, null, null)), domain);
+    }
+    assertTrue(dao.findApiKey(UserTokens.DOMAIN, "OIDC", "carol").isEmpty());
+    // ASCII case variants of the reserved domain are stored canonically; other names keep their spelling.
+    assertEquals(UserTokens.DOMAIN, service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand("USERTOKEN", null, null, null, null, List.of(), null, null, null)).apiKey().domain());
+    assertEquals("Npm.Token_v-2", service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand("Npm.Token_v-2", null, null, null, null, List.of(), null, null, null)).apiKey().domain());
+  }
+
+  @Test
+  void resetKeepsTheIdAndAnnouncesTheRotationSoIssuedBearersAreRevoked() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+    List<Object> events = new java.util.ArrayList<>();
+    service.configureEvents(events::add);
+    var token = service.createApiKeyForOwner("OIDC", "carol",
+        new ApiKeyCommand(UserTokens.DOMAIN, null, null, "docker", null, List.of(), null, null, null));
+    assertTrue(events.isEmpty());
+
+    var reset = service.resetApiKeyForOwner(token.apiKey().id(), "OIDC", "carol");
+
+    assertEquals(token.apiKey().id(), reset.apiKey().id());
+    assertEquals(List.of(new ApiKeyRotatedEvent(token.apiKey().id())), events);
+  }
+
+  private static void withCaller(Long apiKeyId, Runnable action) {
+    var request = new org.springframework.mock.web.MockHttpServletRequest();
+    request.setAttribute(AuthenticatedSubject.REQUEST_ATTRIBUTE, new AuthenticatedSubject(
+        "Local", "admin", apiKeyId == null ? "local" : "api-key", apiKeyId,
+        new PermissionSubject("Local", "admin", Set.of("nx-admin"), null)));
+    org.springframework.web.context.request.RequestContextHolder.setRequestAttributes(
+        new org.springframework.web.context.request.ServletRequestAttributes(request));
+    try {
+      action.run();
+    } finally {
+      org.springframework.web.context.request.RequestContextHolder.resetRequestAttributes();
+    }
+  }
+
+  @Test
   void resetApiKeyForOwnerRotatesRecoverableExistingToken() {
     FakeSecurityDao dao = new FakeSecurityDao();
     SecurityManagementService service = new SecurityManagementService(dao);
@@ -664,7 +928,7 @@ class SecurityManagementServiceValidationTest {
         "alice",
         new ApiKeyCommand("NpmToken", null, null, "npm login", null, List.of(), null, null, null));
     var reset = service.resetApiKeyForOwner(first.apiKey().id(), "Local", "alice");
-    var afterResetCreate = service.createApiKeyForOwner(
+    var afterResetCreate = service.getOrCreateApiKeyForLogin(
         "Local",
         "alice",
         new ApiKeyCommand("NpmToken", null, null, "npm login", null, List.of(), null, null, null));
@@ -673,6 +937,25 @@ class SecurityManagementServiceValidationTest {
     assertEquals(first.apiKey().id(), reset.apiKey().id());
     assertEquals(reset.token(), afterResetCreate.token());
     assertEquals(1, service.listApiKeysForOwner("Local", "alice").size());
+  }
+
+  @Test
+  void ownerApiKeyCreationRejectsAnExistingKeyWithAnUnreadablePayload() {
+    FakeSecurityDao dao = new FakeSecurityDao();
+    SecurityManagementService service = new SecurityManagementService(dao);
+    var original = new ApiKeyRecord(
+        10L, "GenericToken", "Local", "alice", "original", "ACTIVE",
+        "existing-hash", "existing", Map.of("values", List.of("read")),
+        "unreadable", null, null, null, null);
+    dao.apiKey(original);
+
+    assertThrows(ApiKeyAlreadyExistsException.class, () -> service.createApiKeyForOwner(
+        "Local", "alice",
+        new ApiKeyCommand(
+            "GenericToken", null, null, "replacement", null, List.of("publish"),
+            null, null, null)));
+
+    assertEquals(original, dao.findApiKey("GenericToken", "Local", "alice").orElseThrow());
   }
 
   @Test
@@ -1017,6 +1300,11 @@ class SecurityManagementServiceValidationTest {
       }
 
       @Override
+      public Optional<SecurityRealmRecord> findRealmForUpdate(String realmId) {
+        return findRealm(realmId);
+      }
+
+      @Override
       public void upsertRealm(SecurityRealmRecord record) {
         SecurityRealmRecord stored = new SecurityRealmRecord(
             record.id() == null ? (long) realms.size() + 1 : record.id(),
@@ -1034,9 +1322,14 @@ class SecurityManagementServiceValidationTest {
         // not needed for service-level assertions
       }
 
-      @Override
-      public Optional<SecurityRoleRecord> findRole(String roleId) {
+    @Override
+    public Optional<SecurityRoleRecord> findRole(String roleId) {
       return Optional.ofNullable(roles.get(roleId));
+    }
+
+    @Override
+    public List<SecurityRoleRecord> listRoles() {
+      return List.copyOf(roles.values());
     }
 
     @Override
@@ -1213,6 +1506,15 @@ class SecurityManagementServiceValidationTest {
           .filter(apiKey -> apiKey.ownerSource().equals(ownerSource))
           .filter(apiKey -> apiKey.ownerUserId().equals(ownerUserId))
           .findFirst();
+    }
+
+    @Override
+    public boolean insertApiKeyIfAbsent(ApiKeyRecord record) {
+      if (findApiKey(record.domain(), record.ownerSource(), record.ownerUserId()).isPresent()) {
+        return false;
+      }
+      upsertApiKey(record);
+      return true;
     }
 
     @Override

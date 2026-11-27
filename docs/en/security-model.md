@@ -35,6 +35,10 @@ Supported authentication sources include:
 
 Authentication order and exact behavior depend on the request type. Protocol clients commonly use Basic auth, API keys, or protocol-native token flows. Browser users use sessions after login.
 
+API keys, CLI user tokens and Docker/Conan bearer tokens of LDAP and OIDC users carry the external groups the provider verified at the user's last sign-in. Each use resolves those groups through the provider's current role mappings and same-name setting, so these credentials grant the same repository access as the user's browser session, and a changed mapping applies to them too (API key and user token lookups are cached on each node for up to a minute). A group removed in the directory or IdP stops granting access after the user's next sign-in through that provider. Password logins are served from the Basic credential cache for up to `kkrepo.cache.basic-auth.ttl-seconds`, so LDAP picks up the change on the first login after that, or immediately on a browser sign-in.
+
+kkRepo does not see an account being disabled in the directory or IdP. Such a user never signs in again, so their API keys, user tokens and Docker/Conan bearer tokens keep the groups from their last sign-in. Deleting their API keys and user token revokes those keys and the bearer tokens issued from them, but a bearer token issued directly from an LDAP password or OIDC sign-in has no key behind it and stays valid until it expires while the kkRepo account is active. For full offboarding, disable or delete the user in kkRepo: that stops all of their keys, user tokens and issued bearer tokens at once.
+
 ## Shared Database State
 
 Security state is stored in the selected MySQL or PostgreSQL database:
@@ -223,8 +227,17 @@ KKREPO_OUTBOUND_ALLOWED_HOSTS=
 
 Only allow internal upstream hosts when required. This helps reduce SSRF-style risk from misconfigured proxy repositories.
 
+**Admin → System → Proxy Settings** configures an optional shared HTTP or SOCKS5 proxy
+for upstream requests from proxy repositories. A repository may use system settings, use its own
+proxy, or connect directly. Without a saved mode, an existing repository keeps its current route:
+a configured repository proxy is used and an unconfigured repository connects directly.
+The repository usage panel shows which repositories inherit the system proxy. Review the route
+preview before switching repositories in bulk. A bypass entry matches an exact hostname or
+subdomains such as `*.example.com`; it applies only to repositories using system settings and is
+checked at each redirect. Switching modes preserves the repository's saved proxy credentials.
+
 Direct outbound requests are resolved locally and pinned to policy-approved IP addresses. When a
-repository has an explicit HTTP or SOCKS5 outbound proxy, the upstream hostname is instead sent to
+repository uses an HTTP or SOCKS5 outbound proxy, the upstream hostname is instead sent to
 that proxy for resolution so proxy DNS rules and hostname-based routing remain effective. Treat the
 configured proxy as a trusted egress boundary: by default kkrepo still rejects explicit private IP
 targets and local-only names, but it cannot inspect the IP address returned by DNS inside the proxy.

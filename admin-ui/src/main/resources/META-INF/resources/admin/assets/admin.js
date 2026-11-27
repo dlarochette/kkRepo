@@ -77,6 +77,7 @@ let securityUsers = [];
 let securityRoles = [];
 let securityPrivileges = [];
 let securityRealms = [];
+let securityUserRoleFilter = "";
 let securityLdap = null;
 let securityOidc = null;
 const SECURITY_PROVIDER_SECRET_MASK = "********";
@@ -89,6 +90,7 @@ let securityScanState = {
   tasks: [],
   runs: [],
   findings: [],
+  findingGroups: [],
   repositories: [],
   policies: [],
   repositoryPolicyOptions: [],
@@ -114,11 +116,17 @@ let securityScanPages = Object.fromEntries(
       size: SECURITY_SCAN_DEFAULT_PAGE_SIZE,
       query: "",
       currentOnly: key === "findings",
+      ...(key === "findings"
+        ? { hideWaived: false, groupByPackage: false, groupByArtifact: false }
+        : {}),
       direction: "desc",
       requestVersion: 0,
       nextAfter: null
     }
   ]));
+// Keys of expanded finding groups. Keys encode only the group identity, so expansions survive
+// reloads, searches, and waiver changes; changing the grouping shape clears them.
+const securityScanFindingTreeExpanded = new Set();
 let securityScanPolicyFormMode = "create";
 let editingSecurityScanPolicyId = null;
 let editingSecurityScanPolicyEnabled = true;
@@ -154,6 +162,11 @@ const securityScanWaiverRequiredFields = [
   { id: "security-scan-waiver-duration", label: "Expiration" },
   { id: "security-scan-waiver-reason", label: "Reason" }
 ];
+const securityScanPackageWaiverRequiredFields = [
+  { id: "security-scan-package-waiver-scope", label: "Scope" },
+  { id: "security-scan-package-waiver-duration", label: "Expiration" },
+  { id: "security-scan-package-waiver-reason", label: "Reason" }
+];
 
 const SECURITY_SCAN_ROUTE_BASE = "#admin/security/artifact-scanning";
 const SECURITY_SCAN_ROUTE_ALIASES =
@@ -172,6 +185,7 @@ const viewHashRoutes = {
   "routing-rules": "#admin/repository/routingrules",
   blobstores: "#admin/repository/blobstores",
   "docker-registry": "#admin/repository/docker",
+  staging: "#admin/repository/staging",
   "security-users": "#admin/security/users",
   "security-roles": "#admin/security/roles",
   "security-privileges": "#admin/security/privileges",
@@ -184,6 +198,8 @@ const viewHashRoutes = {
   "security-scanning": SECURITY_SCAN_ROUTE_BASE,
   "security-audit-log": "#admin/security/audit-log",
   "ui-settings": "#admin/system/ui-settings",
+  "proxy-settings": "#admin/system/proxy-settings",
+  "download-offload": "#admin/system/download-offload",
   "nexus-migration": "#admin/migration/nexus",
   "repository-data-migration": "#admin/migration/repository-data",
   "ohpm-import": "#admin/migration/ohpm",
@@ -201,6 +217,7 @@ const hashViewRoutes = {
   "#admin/repository/blob-stores": "blobstores",
   "#admin/repository/docker": "docker-registry",
   "#admin/repository/docker-registry": "docker-registry",
+  "#admin/repository/staging": "staging",
   "#admin/security": "security-users",
   "#admin/security/users": "security-users",
   "#admin/security/roles": "security-roles",
@@ -218,6 +235,8 @@ const hashViewRoutes = {
   "#admin/security/audit": "security-audit-log",
   "#admin/system": "ui-settings",
   "#admin/system/ui-settings": "ui-settings",
+  "#admin/system/proxy-settings": "proxy-settings",
+  "#admin/system/download-offload": "download-offload",
   "#admin/system/ui": "ui-settings",
   "#admin/migration": "nexus-migration",
   "#admin/migration/nexus": "nexus-migration",
@@ -576,7 +595,7 @@ const FORMAT_DISPLAY_NAMES = Object.freeze({
   conda: "Conda",
   conan: "Conan 2",
   apt: "APT / Debian",
-  alpine: "Alpine / APK",
+  alpine: "APK / Alpine",
   r: "R / CRAN",
   huggingface: "Hugging Face Models",
   gitlfs: "Git LFS",
@@ -1007,7 +1026,7 @@ function securityLdapFormValue({ attributes = securityProviderAttributes.ldap, m
     groupMemberAttribute: textInputValue("security-ldap-group-member-attribute"),
     groupMemberFormat: textInputValue("security-ldap-group-member-format"),
     groupObjectClass: textInputValue("security-ldap-group-object-class"),
-    attributes
+    attributes: { ...attributes, legacyRoleMatching: document.getElementById("security-ldap-legacy-role-matching").checked }
   };
 }
 
@@ -1034,7 +1053,7 @@ function securityOidcFormValue({ attributes = securityProviderAttributes.oidc, m
     rolesClaim: textInputValue("security-oidc-roles-claim"),
     clockSkewSeconds: numberInputValue("security-oidc-clock-skew") ?? 60,
     jwksCacheSeconds: numberInputValue("security-oidc-jwks-cache") ?? 300,
-    attributes
+    attributes: { ...attributes, legacyRoleMatching: document.getElementById("security-oidc-legacy-role-matching").checked }
   };
 }
 
@@ -1075,6 +1094,8 @@ function applySecurityLdapJsonValue(value) {
     ? editableSecurityProviderAttributes(value.attributes, ["name"])
     : {};
   securityProviderAttributes.ldap = attributes;
+  setCheckboxValue("security-ldap-legacy-role-matching",
+    securityProviderJsonBoolean(attributes.legacyRoleMatching, Boolean(value.url || value.host)));
   clearRequiredFieldErrors(ldapRequiredFields);
   refreshSecurityLdapRequiredMarkers();
 }
@@ -1103,6 +1124,8 @@ function applySecurityOidcJsonValue(value) {
     ? editableSecurityProviderAttributes(value.attributes)
     : {};
   securityProviderAttributes.oidc = attributes;
+  setCheckboxValue("security-oidc-legacy-role-matching",
+    securityProviderJsonBoolean(attributes.legacyRoleMatching, Boolean(value.issuer || value.issuerUri || value.jwksUri)));
   clearRequiredFieldErrors(oidcRequiredFields);
   refreshSecurityOidcRequiredMarkers();
 }
@@ -2941,6 +2964,7 @@ function refreshRepositoryRecipeControls() {
   if (format === "gitlfs") strict.checked = false;
   document.getElementById("repository-hosted-fields").hidden = type !== "HOSTED";
   document.getElementById("repository-proxy-fields").hidden = type !== "PROXY";
+  document.getElementById("repository-block-outbound-field").hidden = type !== "PROXY";
   const ntlmAvailable = type === "PROXY" && format === "nuget";
   document.getElementById("repository-remote-authentication-field").hidden = !ntlmAvailable;
   if (!ntlmAvailable) document.getElementById("repository-remote-authentication-type").value = "auto";
@@ -2948,6 +2972,7 @@ function refreshRepositoryRecipeControls() {
   document.getElementById("repository-remote-ntlm-domain-field").hidden = !ntlmSelected;
   document.getElementById("repository-remote-ntlm-host-field").hidden = !ntlmSelected;
   document.getElementById("repository-outbound-proxy-fields").hidden = type !== "PROXY";
+  window.KkProxySettings?.refreshRepositoryForm();
   document.getElementById("repository-group-fields").hidden = type !== "GROUP";
   document.getElementById("repository-raw-fields").hidden = format !== "raw";
   document.getElementById("repository-docker-fields").hidden = format !== "docker";
@@ -2958,7 +2983,7 @@ function refreshRepositoryRecipeControls() {
     format !== "conan" || repositoryFormMode !== "edit";
   document.getElementById("repository-apt-fields").hidden = format !== "apt";
   document.getElementById("repository-alpine-fields").hidden = format !== "alpine";
-  document.getElementById("repository-swift-proxy-note").hidden =
+  document.getElementById("repository-swift-proxy-help").hidden =
     !(format === "swift" && type === "PROXY");
   document.getElementById("repository-yum-depth-field").hidden = format !== "yum" || type !== "HOSTED";
   const pypiIndexPathVisible = format === "pypi" && type === "PROXY";
@@ -2966,8 +2991,6 @@ function refreshRepositoryRecipeControls() {
     !pypiIndexPathVisible;
   const minimumReleaseAgeVisible = MINIMUM_RELEASE_AGE_FORMATS.has(format) && type === "PROXY";
   document.getElementById("repository-minimum-release-age-field").hidden =
-    !minimumReleaseAgeVisible;
-  document.getElementById("repository-minimum-release-age-note").hidden =
     !minimumReleaseAgeVisible;
   refreshDockerConnectorControls();
   refreshAptControls();
@@ -3382,6 +3405,7 @@ function repositoryFormPayload() {
         ? (minimumReleaseAge === "" ? 0 : Number(minimumReleaseAge))
         : null,
       autoBlock: document.getElementById("repository-auto-block").checked,
+      blockOutboundConnections: document.getElementById("repository-block-outbound").checked,
       streamingEnabled: document.getElementById("repository-streaming-enabled").checked,
       remoteAuthenticationType: textInputValue("repository-remote-authentication-type"),
       remoteNtlmDomain: textInputValue("repository-remote-ntlm-domain"),
@@ -3391,16 +3415,7 @@ function repositoryFormPayload() {
       remotePasswordConfigured: document.getElementById("repository-remote-password-clear").checked ? false : null,
       remoteBearerToken: textInputValue("repository-remote-bearer-token"),
       remoteBearerTokenConfigured: document.getElementById("repository-remote-bearer-token-clear").checked ? false : null,
-      outboundProxyType: document.getElementById("repository-outbound-proxy-type").value,
-      outboundProxyHost: textInputValue("repository-outbound-proxy-host"),
-      outboundProxyPort: (function () {
-        const port = document.getElementById("repository-outbound-proxy-port").value;
-        return port === "" ? null : Number(port);
-      })(),
-      outboundProxyUsername: textInputValue("repository-outbound-proxy-username"),
-      outboundProxyPassword: textInputValue("repository-outbound-proxy-password"),
-      outboundProxyPasswordConfigured:
-        document.getElementById("repository-outbound-proxy-password-clear").checked ? false : null
+      ...window.KkProxySettings.repositoryPayload()
     };
     if (recipe.format === "pypi") {
       payload.pypi = {
@@ -3409,7 +3424,8 @@ function repositoryFormPayload() {
     }
   } else if (type === "GROUP") {
     payload.group = {
-      memberNames: [...memberTransfer.selected]
+      memberNames: [...memberTransfer.selected],
+      writeRepository: document.getElementById("repository-group-write-target").value.trim() || null
     };
   }
   if (recipe?.format === "conan" && type !== "GROUP") {
@@ -3489,6 +3505,7 @@ function setRepositoryFormDefaults() {
   document.getElementById("repository-remote-url").value = "";
   document.getElementById("repository-yum-depth").value = "0";
   document.getElementById("repository-pypi-index-path").value = "/simple";
+  document.getElementById("repository-group-write-target").value = "";
   document.getElementById("repository-allowed-redirect-hosts").value = "";
   document.getElementById("repository-remote-authentication-type").value = "auto";
   document.getElementById("repository-remote-ntlm-domain").value = "";
@@ -3500,17 +3517,12 @@ function setRepositoryFormDefaults() {
   document.getElementById("repository-remote-bearer-token").value = "";
   document.getElementById("repository-remote-bearer-token").placeholder = "";
   document.getElementById("repository-remote-bearer-token-clear").checked = false;
-  document.getElementById("repository-outbound-proxy-type").value = "";
-  document.getElementById("repository-outbound-proxy-host").value = "";
-  document.getElementById("repository-outbound-proxy-port").value = "";
-  document.getElementById("repository-outbound-proxy-username").value = "";
-  document.getElementById("repository-outbound-proxy-password").value = "";
-  document.getElementById("repository-outbound-proxy-password").placeholder = "";
-  document.getElementById("repository-outbound-proxy-password-clear").checked = false;
+  window.KkProxySettings.resetRepositoryForm();
   document.getElementById("repository-content-max-age").value = "1440";
   document.getElementById("repository-metadata-max-age").value = "1440";
   document.getElementById("repository-minimum-release-age").value = "0";
   document.getElementById("repository-auto-block").checked = true;
+  document.getElementById("repository-block-outbound").checked = false;
   document.getElementById("repository-streaming-enabled").checked = false;
   document.getElementById("repository-raw-content-disposition").value = "ATTACHMENT";
   document.getElementById("repository-docker-https-enabled").checked = false;
@@ -3635,21 +3647,13 @@ function showEditRepositoryForm(name) {
     document.getElementById("repository-remote-bearer-token-clear").checked = false;
     // Normalize legacy/alias values stored before the backend canonicalized the type,
     // so the select (HTTP/SOCKS only) still shows the effective choice.
-    const outboundProxyType = (repo.proxy.outboundProxyType || "").toUpperCase();
-    document.getElementById("repository-outbound-proxy-type").value =
-      outboundProxyType === "SOCKS5" ? "SOCKS" : outboundProxyType;
-    document.getElementById("repository-outbound-proxy-host").value = repo.proxy.outboundProxyHost || "";
-    document.getElementById("repository-outbound-proxy-port").value = repo.proxy.outboundProxyPort ?? "";
-    document.getElementById("repository-outbound-proxy-username").value = repo.proxy.outboundProxyUsername || "";
-    document.getElementById("repository-outbound-proxy-password").value = "";
-    document.getElementById("repository-outbound-proxy-password").placeholder =
-      repo.proxy.outboundProxyPasswordConfigured ? "Saved proxy password unchanged" : "";
-    document.getElementById("repository-outbound-proxy-password-clear").checked = false;
+    window.KkProxySettings.resetRepositoryForm(repo.proxy);
     document.getElementById("repository-content-max-age").value = repo.proxy.contentMaxAgeMinutes ?? "1440";
     document.getElementById("repository-metadata-max-age").value = repo.proxy.metadataMaxAgeMinutes ?? "1440";
     document.getElementById("repository-minimum-release-age").value =
       repo.proxy.minimumReleaseAgeMinutes ?? "0";
     document.getElementById("repository-auto-block").checked = repo.proxy.autoBlock !== false;
+    document.getElementById("repository-block-outbound").checked = repo.proxy.blockOutboundConnections === true;
     document.getElementById("repository-streaming-enabled").checked = repo.proxy.streamingEnabled === true;
   }
   document.getElementById("repository-yum-depth").value = repo.yum?.repodataDepth ?? 0;
@@ -3659,6 +3663,8 @@ function showEditRepositoryForm(name) {
   if (repo.type === "GROUP" && repo.group && Array.isArray(repo.group.memberNames)) {
     memberTransfer.selected = [...repo.group.memberNames];
   }
+  document.getElementById("repository-group-write-target").value =
+    repo.group?.writeRepository || "";
   if (repo.docker) {
     document.getElementById("repository-docker-https-enabled").checked = Boolean(repo.docker.httpsConnectorEnabled);
     document.getElementById("repository-docker-https-port").value = repo.docker.httpsConnectorPort ?? "";
@@ -4201,20 +4207,33 @@ async function loadSecurityUsers() {
   refreshSecurityTransfers(["userRoles"]);
 }
 
+function securityRoleBadges(roles, source = "", linkToRole = false) {
+  const classes = `state-badge compact${source ? " external-role-badge" : ""}`;
+  return (roles || []).map((role) => {
+    const label = escapeHtml(role) + (source ? " · " + escapeHtml(source) : "");
+    return linkToRole
+      ? `<button type="button" class="${classes} security-role-link" data-role-id="${escapeHtml(role)}">${label}</button>`
+      : `<span class="${classes}">${label}</span>`;
+  }).join("");
+}
+
 function renderSecurityUsers() {
   renderSecurityUserSourceFilter();
   const filter = filterValue("security-user-filter");
   const sourceFilter = document.getElementById("security-user-source-filter")?.value || "";
   const rows = securityUsers.filter((user) =>
     (!sourceFilter || user.source === sourceFilter)
-    && listContainsFilter([displaySource(user.source), user.source, user.userId, user.status, user.email, ...(user.roles || [])], filter))
+    && (securityUserRoleFilter
+      ? [...(user.roles || []), ...(user.externalRoles || [])].includes(securityUserRoleFilter)
+      : listContainsFilter([displaySource(user.source), user.source, user.userId, user.status, user.email,
+        ...(user.roles || []), ...(user.externalRoles || [])], filter)))
     .map((user) => `
       <tr>
         <td>${escapeHtml(displaySource(user.source))}</td>
         <td>${escapeHtml(user.userId)}</td>
-        <td><span class="state-badge compact ${user.status === "ACTIVE" ? "ok" : "warn"}">${escapeHtml(user.status || "")}</span></td>
+        <td><span class="state-badge compact ${user.status?.trim().toUpperCase() === "ACTIVE" ? "ok" : "warn"}">${escapeHtml(user.status || "")}</span></td>
         <td>${escapeHtml(user.email || "")}</td>
-        <td>${escapeHtml((user.roles || []).join(", "))}</td>
+        <td><div class="security-role-badges">${securityRoleBadges(user.roles, "", true)}${securityRoleBadges(user.externalRoles, displaySource(user.source), true)}</div></td>
         <td class="actions-column">
           <button class="row-action edit-security-user-button" data-source="${escapeHtml(user.source)}" data-id="${escapeHtml(user.userId)}" type="button">edit</button>
           <button class="row-action delete-security-user-button" data-source="${escapeHtml(user.source)}" data-id="${escapeHtml(user.userId)}" type="button">delete</button>
@@ -4239,6 +4258,10 @@ function showSecurityUserForm(user = null) {
   document.getElementById("security-user-status").value = user?.status || "ACTIVE";
   document.getElementById("security-user-password").value = "";
   setSecurityTransferSelection("userRoles", user?.roles || []);
+  document.getElementById("security-user-external-section").hidden = !user?.external;
+  document.getElementById("security-user-external-roles").innerHTML =
+    securityRoleBadges(user?.externalRoles, displaySource(user?.source))
+    || '<span class="field-note">No external roles assigned.</span>';
   clearRequiredFieldErrors(securityUserRequiredFields);
   openFormModal("security-user-form", user ? "security-user-first-name" : "security-user-id");
 }
@@ -4310,12 +4333,15 @@ async function loadSecurityRoles() {
 function renderSecurityRoles() {
   const filter = filterValue("security-role-filter");
   const rows = securityRoles.filter((role) =>
-    listContainsFilter([role.roleId, role.name, role.description], filter))
+    listContainsFilter([role.roleId, role.name, role.description,
+      ...(role.externalMappings || []).flatMap(({ externalName, realmId }) => [externalName, realmId])], filter))
     .map((role) => `
       <tr>
         <td>${escapeHtml(role.roleId)}${role.readOnly ? ' <span class="state-badge compact">read-only</span>' : ""}</td>
         <td>${escapeHtml(role.name || "")}</td>
         <td>${escapeHtml(role.description || "")}</td>
+        <td><div class="security-role-badges">${(role.externalMappings || []).map(({ externalName, realmId }) =>
+          securityRoleBadges([externalName], realmId.toUpperCase())).join("")}</div></td>
         <td class="actions-column">
           ${role.readOnly ? `
             <button class="row-action view-security-role-button" data-id="${escapeHtml(role.roleId)}" type="button">view</button>
@@ -4327,7 +4353,7 @@ function renderSecurityRoles() {
       </tr>
     `).join("");
   document.getElementById("security-role-table").innerHTML = rows
-    || '<tr><td colspan="4" class="placeholder">No roles.</td></tr>';
+    || '<tr><td colspan="5" class="placeholder">No roles.</td></tr>';
 }
 
 function showSecurityRoleForm(role = null, options = {}) {
@@ -4348,6 +4374,11 @@ function showSecurityRoleForm(role = null, options = {}) {
   setSecurityTransferSelection("rolePrivileges", role?.privileges || []);
   setSecurityTransferSelection("roleRoles", role?.roles || []);
   setSecurityRoleFormReadOnly(viewOnly);
+  document.getElementById("security-role-mappings").replaceChildren();
+  for (const mapping of role?.externalMappings || []) addSecurityRoleMapping(mapping, viewOnly);
+  document.getElementById("add-security-role-mapping").hidden = viewOnly;
+  document.getElementById("edit-security-role-mappings").hidden = !viewOnly;
+  document.getElementById("view-security-role-users").hidden = !role;
   clearRequiredFieldErrors(securityRoleRequiredFields);
   openFormModal("security-role-form", viewOnly ? "cancel-security-role-button" : role ? "security-role-name" : "security-role-id");
 }
@@ -4369,6 +4400,7 @@ function setSecurityRoleFormReadOnly(readOnly) {
   document.getElementById("security-role-description").disabled = readOnly;
   document.getElementById("security-role-id").disabled = readOnly || securityRoleMode !== "create";
   saveButton.hidden = readOnly;
+  saveButton.textContent = "Save role";
   cancelButton.textContent = readOnly ? "Close" : "Cancel";
   ["role-privilege", "role-contained"].forEach((prefix) => {
     document.getElementById(`${prefix}-transfer`)?.classList.toggle("is-readonly", readOnly);
@@ -4378,25 +4410,79 @@ function setSecurityRoleFormReadOnly(readOnly) {
   refreshSecurityTransfers(["rolePrivileges", "roleRoles"]);
 }
 
+function addSecurityRoleMapping(mapping = {}, readOnly = false) {
+  const row = document.createElement("div");
+  row.className = "security-role-mapping";
+  row.innerHTML = `
+    <label><span>Identity provider</span><select required>
+      <option value="">Select a provider</option>
+      <option value="oidc">OIDC</option>
+      <option value="ldap">LDAP</option>
+    </select></label>
+    <label><span>External role or group</span><input type="text" maxlength="255" required></label>
+    <button type="button" class="row-action">Remove mapping</button>`;
+  const provider = row.querySelector("select");
+  const name = row.querySelector("input");
+  const remove = row.querySelector("button");
+  provider.value = mapping.realmId || "";
+  name.value = mapping.externalName || "";
+  provider.disabled = readOnly;
+  name.disabled = readOnly;
+  remove.hidden = readOnly;
+  remove.addEventListener("click", () => {
+    row.remove();
+    document.getElementById("add-security-role-mapping").focus();
+  });
+  document.getElementById("security-role-mappings").append(row);
+  if (!mapping.realmId) provider.focus();
+}
+
+function editSecurityRoleMappings() {
+  securityRoleMode = "mappings";
+  const container = document.getElementById("security-role-mappings");
+  container.querySelectorAll("input, select").forEach((field) => { field.disabled = false; });
+  container.querySelectorAll("button").forEach((button) => { button.hidden = false; });
+  document.getElementById("save-security-role-button").hidden = false;
+  document.getElementById("save-security-role-button").textContent = "Save mappings";
+  document.getElementById("cancel-security-role-button").textContent = "Cancel";
+  document.getElementById("edit-security-role-mappings").hidden = true;
+  const add = document.getElementById("add-security-role-mapping");
+  add.hidden = false;
+  add.focus();
+}
+
 async function saveSecurityRole() {
   if (securityRoleMode === "view") return;
-  if (!validateRequiredFields(securityRoleRequiredFields)) return;
+  if (securityRoleMode !== "mappings" && !validateRequiredFields(securityRoleRequiredFields)) return;
+  const mappings = [];
+  for (const row of document.querySelectorAll("#security-role-mappings .security-role-mapping")) {
+    const provider = row.querySelector("select");
+    const name = row.querySelector("input");
+    if (!provider.value || !name.value.trim()) {
+      (provider.value ? name : provider).focus();
+      showToast("Choose a provider and enter an external role or group for each mapping.", "error");
+      return;
+    }
+    mappings.push({ realmId: provider.value, externalName: name.value.trim() });
+  }
   const payload = {
     roleId: document.getElementById("security-role-id").value.trim(),
     name: document.getElementById("security-role-name").value.trim() || null,
     description: document.getElementById("security-role-description").value.trim() || null,
     readOnly: isBuiltInReadOnlyRoleId(document.getElementById("security-role-id").value),
     privileges: commaList(document.getElementById("security-role-privileges").value),
-    roles: commaList(document.getElementById("security-role-roles").value)
+    roles: commaList(document.getElementById("security-role-roles").value),
+    externalMappings: mappings
   };
-  const path = securityRoleMode === "edit"
-    ? `/internal/security/roles/${encodeURIComponent(payload.roleId)}`
-    : "/internal/security/roles";
+  const create = securityRoleMode === "create";
+  const mappingsOnly = securityRoleMode === "mappings";
+  const rolePath = `/internal/security/roles/${encodeURIComponent(payload.roleId)}`;
+  const path = create ? "/internal/security/roles" : mappingsOnly ? `${rolePath}/external-mappings` : rolePath;
   try {
     const response = await fetch(path, {
-      method: securityRoleMode === "edit" ? "PUT" : "POST",
+      method: create ? "POST" : "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(mappingsOnly ? mappings : payload)
     });
     if (!response.ok) throw new Error(await responseErrorMessage(response));
     hideSecurityRoleForm();
@@ -4545,8 +4631,7 @@ async function saveSecurityRealms() {
       type: realm?.type,
       name: realm?.name,
       enabled: row.dataset.realmId === "local" || row.querySelector(".security-realm-enabled").checked,
-      priority: Number(row.querySelector(".security-realm-priority").value || 0),
-      attributes: realm?.attributes || {}
+      priority: Number(row.querySelector(".security-realm-priority").value || 0)
     };
   });
   try {
@@ -4631,6 +4716,8 @@ function renderSecurityLdap() {
   setInputValue("security-ldap-group-object-class", settings.groupObjectClass, "groupOfNames");
   securityProviderAttributes.ldap = editableSecurityProviderAttributes(settings.attributes, ["name"]);
   refreshSecurityLdapRequiredMarkers();
+  setCheckboxValue("security-ldap-legacy-role-matching",
+    securityProviderJsonBoolean(settings.attributes?.legacyRoleMatching, Boolean(settings.url || settings.host)));
   syncSecurityProviderJsonFromForm("ldap", { force: true });
 }
 
@@ -4736,6 +4823,8 @@ function renderSecurityOidc() {
   document.getElementById("security-oidc-jwks-cache").value = Number(settings.jwksCacheSeconds ?? 300);
   securityProviderAttributes.oidc = editableSecurityProviderAttributes(settings.attributes);
   refreshSecurityOidcRequiredMarkers();
+  setCheckboxValue("security-oidc-legacy-role-matching",
+    securityProviderJsonBoolean(settings.attributes?.legacyRoleMatching, Boolean(settings.issuer || settings.issuerUri || settings.jwksUri)));
   syncSecurityProviderJsonFromForm("oidc", { force: true });
 }
 
@@ -4858,6 +4947,7 @@ function renderSecurityApiKeys() {
 }
 
 let apiKeyOwnerPicker;
+let apiKeyFormGeneration = 0;
 
 function showSecurityApiKeyForm() {
   apiKeyOwnerPicker ||= window.KkUserPicker.create({
@@ -4875,12 +4965,36 @@ function showSecurityApiKeyForm() {
 }
 
 function hideSecurityApiKeyForm() {
+  ++apiKeyFormGeneration;
+  document.getElementById("save-security-api-key-button").disabled = false;
   apiKeyOwnerPicker?.close();
   closeFormModal("security-api-key-form");
   clearRequiredFieldErrors(securityApiKeyRequiredFields);
 }
 
+function hideSecurityApiKeyResult() {
+  document.getElementById("security-api-key-value").value = "";
+  closeFormModal("security-api-key-result");
+  document.getElementById("create-security-api-key-button").focus();
+}
+
+async function copySecurityApiKey() {
+  const input = document.getElementById("security-api-key-value");
+  if (!input.value) return;
+  try {
+    await copyLocationText(input.value);
+    showToast("Copied", "ok");
+  } catch {
+    if (!input.value) return;
+    input.focus();
+    input.select();
+    showToast("Ctrl+C / Cmd+C", "info");
+  }
+}
+
 async function saveSecurityApiKey() {
+  const save = document.getElementById("save-security-api-key-button");
+  if (save.disabled) return;
   if (!apiKeyOwnerPicker?.validate()) return;
   if (!validateRequiredFields(securityApiKeyRequiredFields)) return;
   const payload = {
@@ -4889,6 +5003,8 @@ async function saveSecurityApiKey() {
     ownerUserId: document.getElementById("security-api-key-owner-user-id").value.trim(),
     displayName: document.getElementById("security-api-key-display-name").value.trim() || null
   };
+  const generation = apiKeyFormGeneration;
+  save.disabled = true;
   try {
     const response = await fetch("/internal/security/api-keys", {
       method: "POST",
@@ -4897,11 +5013,20 @@ async function saveSecurityApiKey() {
     });
     if (!response.ok) throw new Error(await responseErrorMessage(response));
     const created = await response.json();
-    hideSecurityApiKeyForm();
+    if (generation === apiKeyFormGeneration) {
+      hideSecurityApiKeyForm();
+      if (created.token) {
+        document.getElementById("security-api-key-value").value = created.token;
+        openFormModal("security-api-key-result", "security-api-key-value");
+      } else {
+        showToast("API key imported.", "ok");
+      }
+    }
     await loadSecurityApiKeys();
-    showToast(created.token ? `API key created: ${created.token}` : "API key imported.", "ok");
   } catch (error) {
-    showToast(`Create failed: ${error.message}`, "error");
+    if (generation === apiKeyFormGeneration) showToast(`Create failed: ${error.message}`, "error");
+  } finally {
+    if (generation === apiKeyFormGeneration) save.disabled = false;
   }
 }
 
@@ -5164,6 +5289,19 @@ function renderMigrationHash(value) {
   return `<code class="migration-hash-cell" title="${escapeHtml(hash)}">${escapeHtml(shortText(hash, 18))}</code>`;
 }
 
+function renderMigrationUserTokens(report) {
+  if (!report || !(report.tokens > 0 || report.legacyTableTokens > 0 || report.legacyTableUnreadable)) return "";
+  return renderMigrationSection("Nexus Pro user tokens (not migrated)", renderCompactTable([
+    { label: "Tokens", value: (value) => value.tokens ?? 0 },
+    { label: "Owners", value: (value) => migrationValues(value.owners).join(", ") || "-" },
+    { label: "Legacy table tokens", value: (value) => value.legacyTableUnreadable
+      ? "unreadable (count unknown)" : value.legacyTableTokens ?? 0 },
+    { label: "Legacy table owners", value: (value) => [...migrationValues(value.legacyTableOwners),
+      ...(value.legacyTableOwnersUnverified ? ["unverified owners not shown"] : [])].join(", ") || "-" },
+    { label: "Message", value: (value) => value.message || "" }
+  ], [report]));
+}
+
 function renderMigrationResult(payload, title) {
   const result = document.getElementById("migration-result");
   const preflight = payload.preflight || payload;
@@ -5277,6 +5415,7 @@ function renderMigrationResult(payload, title) {
       { label: "Status", value: (apiKey) => apiKey.status || "" },
       { label: "Raw key", value: (apiKey) => apiKey.rawKeyPresent ? "present" : "missing" }
     ], security.apiKeyDetails || []))}
+    ${renderMigrationUserTokens(security.userTokens)}
     ${renderMigrationSection("Content selectors", renderCompactTable([
       { label: "Name", value: (selector) => selector.name || "" },
       { label: "Type", value: (selector) => selector.type || "" },
@@ -5974,10 +6113,10 @@ function renderSecurityScanFindingAdvisory(finding) {
     </a>`;
 }
 
-function renderSecurityScanFindings() {
-  document.getElementById("security-scan-finding-table").innerHTML =
-    securityScanState.findings.map((finding) => `
-      <tr>
+function renderSecurityScanFindingRow(finding, level = null) {
+  const tree = level == null ? "" : ` class="security-scan-finding-tree-leaf" data-level="${level}"`;
+  return `
+      <tr${tree}>
         <td>${renderSecurityScanSeverity(finding.severity)}</td>
         <td>${renderSecurityScanFindingAdvisory(finding)}</td>
         <td>${renderSecurityScanFindingRepositories(finding)}</td>
@@ -5986,8 +6125,112 @@ function renderSecurityScanFindings() {
         <td>${escapeHtml((finding.fixedVersions || []).join(", ") || "-")}</td>
         <td>${renderSecurityScanFindingWaiverStatus(finding)}</td>
         <td class="actions-column security-scan-finding-actions">${renderSecurityScanFindingActions(finding)}</td>
-      </tr>`).join("")
+      </tr>`;
+}
+
+function renderSecurityScanFindings() {
+  const table = document.getElementById("security-scan-finding-table");
+  if (securityScanFindingRootGroupBy()) {
+    const rows = [];
+    securityScanState.findingGroups.forEach((node) => appendSecurityScanFindingNodeRows(rows, node));
+    table.innerHTML = rows.join("")
       || '<tr><td colspan="8" class="placeholder">No known vulnerability findings are visible.</td></tr>';
+    return;
+  }
+  table.innerHTML =
+    securityScanState.findings.map((finding) => renderSecurityScanFindingRow(finding)).join("")
+      || '<tr><td colspan="8" class="placeholder">No known vulnerability findings are visible.</td></tr>';
+}
+
+const SECURITY_SCAN_FINDING_GROUP_KINDS = Object.freeze({
+  PACKAGE: "Package",
+  ARTIFACT: "Artifact",
+  ARTIFACT_VERSION: "Version"
+});
+
+function securityScanFindingGroupLabel(groupBy, group) {
+  if (groupBy === "PACKAGE") {
+    return {
+      text: group.packageName || "-",
+      detail: group.installedVersion || "no version",
+      title: [group.packageName, group.installedVersion].filter(Boolean).join(" ")
+    };
+  }
+  if (groupBy === "ARTIFACT_VERSION") {
+    const version = String(group.artifactVersion || "");
+    // Docker manifests are versioned by digest; keep the row readable and the full value on hover.
+    const shortened = /^[a-z0-9]+:[0-9a-f]{32,}$/i.test(version)
+      ? `${version.slice(0, version.indexOf(":") + 13)}…`
+      : version;
+    return { text: shortened || "no version", detail: "", title: version };
+  }
+  const namespace = String(group.artifactNamespace || "");
+  const name = String(group.artifactName || "-");
+  const separator = String(group.artifactFormat || "").toLowerCase() === "maven2" ? ":" : "/";
+  const text = namespace ? `${namespace}${separator}${name}` : name;
+  return { text, detail: group.artifactFormat || "", title: text };
+}
+
+function renderSecurityScanFindingGroupCounts(group) {
+  const severities = [
+    ["CRITICAL", group.criticalCount, "critical"],
+    ["HIGH", group.highCount, "high"],
+    ["MEDIUM", group.mediumCount, "medium"],
+    ["LOW", group.lowCount, "low"],
+    ["UNKNOWN", group.otherCount, "other"]
+  ].filter(([, count]) => Number(count) > 0)
+    .map(([severity, count, label]) => {
+      const presentation = SECURITY_SCAN_SEVERITY_PRESENTATION[severity];
+      return `<span class="state-badge compact security-scan-severity security-scan-severity-count ${presentation.tone}" title="${escapeHtml(`${count} ${label}`)}"><span class="lucide-icon icon-${presentation.icon}" aria-hidden="true"></span>${escapeHtml(count)}</span>`;
+    })
+    .join("");
+  const totals = [
+    [group.findingCount, "finding", "findings"],
+    [group.advisoryCount, "advisory", "advisories"],
+    [group.artifactCount, "artifact", "artifacts"]
+  ].map(([count, one, many]) => {
+    const value = Number(count) || 0;
+    return `<span><strong>${escapeHtml(value)}</strong><span>${value === 1 ? one : many}</span></span>`;
+  }).join("");
+  return `<span class="security-scan-finding-group-counts">${severities}${totals}</span>`;
+}
+
+function appendSecurityScanFindingNodeRows(rows, node) {
+  const label = securityScanFindingGroupLabel(node.groupBy, node.group);
+  rows.push(`
+      <tr class="security-scan-finding-group-row" data-level="${node.level}">
+        <td>${renderSecurityScanSeverity(node.group.maxSeverity)}</td>
+        <td colspan="7">
+          <div class="security-scan-finding-group">
+            <button class="security-scan-finding-group-toggle" data-key="${escapeHtml(node.key)}" type="button" aria-expanded="${node.expanded}">
+              <span class="lucide-icon icon-chevron-${node.expanded ? "down" : "right"}" aria-hidden="true"></span>
+              <span class="security-scan-finding-group-kind">${SECURITY_SCAN_FINDING_GROUP_KINDS[node.groupBy]}</span>
+              <span class="security-scan-finding-group-label" title="${escapeHtml(label.title)}">${escapeHtml(label.text)}</span>
+              ${label.detail ? `<span class="security-scan-finding-group-detail">${escapeHtml(label.detail)}</span>` : ""}
+            </button>
+            ${renderSecurityScanFindingGroupCounts(node.group)}
+            ${node.groupBy === "PACKAGE" && securityScanCanMutate("nexus:security-scanning-waivers:create")
+              ? `<button class="row-action security-scan-finding-group-waive" data-key="${escapeHtml(node.key)}" type="button" title="Waive every advisory of this package version">waive package</button>`
+              : ""}
+          </div>
+        </td>
+      </tr>`);
+  if (!node.expanded) return;
+  const childLevel = node.level + 1;
+  node.children.forEach((child) => {
+    if (child.finding) rows.push(renderSecurityScanFindingRow(child.finding, childLevel));
+    else appendSecurityScanFindingNodeRows(rows, child);
+  });
+  const status = node.loading
+    ? "Loading…"
+    : node.error || (node.loaded && node.children.length === 0
+      ? "No findings remain in this group."
+      : "");
+  if (status) {
+    rows.push(`<tr class="security-scan-finding-tree-status" data-level="${childLevel}"><td colspan="8" class="placeholder">${escapeHtml(status)}</td></tr>`);
+  } else if (node.hasMore) {
+    rows.push(`<tr class="security-scan-finding-tree-status" data-level="${childLevel}"><td colspan="8"><button class="row-action security-scan-finding-group-more" data-key="${escapeHtml(node.key)}" type="button">Show more</button></td></tr>`);
+  }
 }
 
 function renderSecurityScanFindingWaiverStatus(finding) {
@@ -6144,13 +6387,184 @@ function securityScanPageParams(key) {
   }
   params.set("limit", String(page.size || SECURITY_SCAN_DEFAULT_PAGE_SIZE));
   if (page.query) params.set("q", page.query);
-  if (key === "findings") params.set("currentOnly", String(page.currentOnly));
+  if (key === "findings") {
+    params.set("currentOnly", String(page.currentOnly));
+    if (page.hideWaived) params.set("hideWaived", "true");
+    const groupBy = securityScanFindingRootGroupBy(page);
+    if (groupBy) {
+      // Group pages use opaque keyset cursors instead of finding IDs.
+      params.delete("after");
+      params.set("groupBy", groupBy);
+      if (page.after) params.set("cursor", page.after);
+    }
+  }
   return params;
+}
+
+// Findings tree shape: artifacts expand to their versions, or to package@version groups when
+// package grouping is also on; package and version groups expand to finding rows.
+function securityScanFindingRootGroupBy(page = securityScanPages.findings) {
+  if (page.groupByArtifact) return "ARTIFACT";
+  if (page.groupByPackage) return "PACKAGE";
+  return null;
+}
+
+function securityScanFindingChildGroupBy(groupBy, page = securityScanPages.findings) {
+  if (groupBy !== "ARTIFACT") return null;
+  return page.groupByPackage ? "PACKAGE" : "ARTIFACT_VERSION";
+}
+
+function securityScanFindingGroupNode(groupBy, group, parent = null) {
+  const filters = { ...(parent?.filters || {}) };
+  if (groupBy === "PACKAGE") {
+    filters.packageName = group.packageName ?? "";
+    filters.installedVersion = group.installedVersion ?? "";
+  } else {
+    filters.artifactFormat = group.artifactFormat ?? "";
+    filters.artifactNamespace = group.artifactNamespace ?? "";
+    filters.artifactName = group.artifactName ?? "";
+    if (groupBy === "ARTIFACT_VERSION") filters.artifactVersion = group.artifactVersion ?? "";
+  }
+  return {
+    key: JSON.stringify([groupBy, filters]),
+    groupBy,
+    group,
+    filters,
+    level: parent ? parent.level + 1 : 0,
+    childGroupBy: securityScanFindingChildGroupBy(groupBy),
+    expanded: false,
+    loading: false,
+    loaded: false,
+    error: "",
+    children: [],
+    cursor: null,
+    hasMore: false,
+    requestVersion: 0
+  };
+}
+
+function securityScanFindingNodes(nodes = securityScanState.findingGroups, result = []) {
+  nodes.forEach((node) => {
+    if (node.finding) return;
+    result.push(node);
+    securityScanFindingNodes(node.children, result);
+  });
+  return result;
+}
+
+function findSecurityScanFindingNode(key) {
+  return securityScanFindingNodes().find((node) => node.key === key) || null;
+}
+
+/** Keeps detail, waiver, and waive actions working for findings loaded inside groups. */
+function refreshSecurityScanFindingTree() {
+  securityScanState.findings = securityScanFindingNodes()
+    .filter((node) => node.expanded)
+    .flatMap((node) => node.children.filter((child) => child.finding).map((child) => child.finding));
+  renderSecurityScanFindings();
+}
+
+function securityScanListItems(key) {
+  return key === "findings" && securityScanFindingRootGroupBy()
+    ? securityScanState.findingGroups
+    : securityScanState[key] || [];
+}
+
+function setSecurityScanListItems(key, items) {
+  if (key !== "findings") {
+    securityScanState[key] = items;
+    return;
+  }
+  const groupBy = securityScanFindingRootGroupBy();
+  if (!groupBy) {
+    securityScanState.findingGroups = [];
+    securityScanState.findings = items;
+    return;
+  }
+  securityScanState.findingGroups =
+    items.map((group) => securityScanFindingGroupNode(groupBy, group));
+  securityScanState.findings = [];
+  restoreSecurityScanFindingNodes(securityScanState.findingGroups);
+}
+
+function restoreSecurityScanFindingNodes(nodes) {
+  nodes.filter((node) => securityScanFindingTreeExpanded.has(node.key)).forEach((node) => {
+    node.expanded = true;
+    loadSecurityScanFindingNodeChildren(node);
+  });
+}
+
+async function toggleSecurityScanFindingNode(key) {
+  const node = findSecurityScanFindingNode(key);
+  if (!node) return;
+  node.expanded = !node.expanded;
+  if (node.expanded) securityScanFindingTreeExpanded.add(node.key);
+  else securityScanFindingTreeExpanded.delete(node.key);
+  if (node.expanded && !node.loaded && !node.loading) {
+    await loadSecurityScanFindingNodeChildren(node);
+  } else {
+    refreshSecurityScanFindingTree();
+  }
+}
+
+async function loadSecurityScanFindingNodeChildren(node, more = false) {
+  const page = securityScanPages.findings;
+  const rootVersion = page.requestVersion;
+  const requestVersion = ++node.requestVersion;
+  if (!more) {
+    node.children = [];
+    node.cursor = null;
+    node.hasMore = false;
+  }
+  node.loading = true;
+  node.error = "";
+  refreshSecurityScanFindingTree();
+  const params = new URLSearchParams();
+  params.set("limit", String(page.size || SECURITY_SCAN_DEFAULT_PAGE_SIZE));
+  if (page.query) params.set("q", page.query);
+  params.set("currentOnly", String(page.currentOnly));
+  if (page.hideWaived) params.set("hideWaived", "true");
+  Object.entries(node.filters).forEach(([name, value]) => params.set(name, value));
+  let path = "/internal/security/scanning/findings";
+  if (node.childGroupBy) {
+    path += "/groups";
+    params.set("groupBy", node.childGroupBy);
+    if (node.cursor) params.set("cursor", node.cursor);
+  } else {
+    params.set("after", String(node.cursor || 0));
+  }
+  const payload = await fetchJson(
+    `${path}?${params.toString()}`, null, "Failed to load scan findings");
+  if (requestVersion !== node.requestVersion || rootVersion !== page.requestVersion) return;
+  node.loading = false;
+  if (!payload) {
+    node.error = "Unable to load this group. Collapse and expand it to retry.";
+    node.loaded = false;
+    refreshSecurityScanFindingTree();
+    return;
+  }
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const children = node.childGroupBy
+    ? items.map((group) => securityScanFindingGroupNode(node.childGroupBy, group, node))
+    : items.map((finding) => ({ finding }));
+  node.children.push(...children);
+  node.cursor = payload.nextCursor ?? payload.nextAfter ?? null;
+  node.hasMore = node.cursor != null;
+  node.loaded = true;
+  refreshSecurityScanFindingTree();
+  if (node.childGroupBy) restoreSecurityScanFindingNodes(children);
+}
+
+async function showMoreSecurityScanFindingNode(key) {
+  const node = findSecurityScanFindingNode(key);
+  if (node?.hasMore && !node.loading) await loadSecurityScanFindingNodeChildren(node, true);
 }
 
 async function fetchSecurityScanPage(key) {
   if (key === "repositories") ++securityScanState.repositoryEditRequest;
-  const endpoint = securityScanListEndpoints[key];
+  const endpoint = key === "findings" && securityScanFindingRootGroupBy()
+    ? "findings/groups"
+    : securityScanListEndpoints[key];
   const requestVersion = ++securityScanPages[key].requestVersion;
   const payload = await fetchJson(
     `/internal/security/scanning/${endpoint}?${securityScanPageParams(key).toString()}`,
@@ -6169,7 +6583,7 @@ function resetSecurityScanPage(key) {
 
 function renderSecurityScanPagination(key) {
   const page = securityScanPages[key];
-  const items = securityScanState[key] || [];
+  const items = securityScanListItems(key);
   const summary = document.querySelector(`[data-security-scan-page-summary="${key}"]`);
   const label = document.querySelector(`[data-security-scan-page-label="${key}"]`);
   const previous = document.querySelector(
@@ -6214,8 +6628,8 @@ async function loadSecurityScanList(key) {
     page.after = page.cursors.at(-1) || 0;
     return loadSecurityScanList(key);
   }
-  securityScanState[key] = items;
   page.nextAfter = payload?.nextCursor ?? payload?.nextAfter ?? null;
+  setSecurityScanListItems(key, items);
   renderSecurityScanList(key);
 }
 
@@ -6261,7 +6675,44 @@ async function sortSecurityScanPage(key, direction) {
 }
 
 async function filterCurrentSecurityScanFindings(currentOnly) {
-  securityScanPages.findings.currentOnly = currentOnly;
+  await filterSecurityScanFindings({ currentOnly });
+}
+
+const SECURITY_SCAN_FINDING_SWITCHES = Object.freeze({
+  currentOnly: "security-scan-current-findings",
+  hideWaived: "security-scan-hide-waived",
+  groupByPackage: "security-scan-group-package",
+  groupByArtifact: "security-scan-group-artifact"
+});
+
+/**
+ * Applies findings view options and reloads from the first page. Changing the grouping shape
+ * forgets expanded groups; filters keep them so the same groups reopen after the reload.
+ * Grouping aggregates every matching finding, so it is limited to current findings: turning
+ * grouping on turns current findings on, and including historical findings turns grouping off.
+ */
+async function filterSecurityScanFindings(changes) {
+  const page = securityScanPages.findings;
+  const next = { ...changes };
+  let notice = "";
+  if (next.currentOnly === false && (page.groupByPackage || page.groupByArtifact)) {
+    next.groupByPackage = false;
+    next.groupByArtifact = false;
+    notice = "Grouping was turned off: it shows current findings only.";
+  } else if ((next.groupByPackage || next.groupByArtifact) && !page.currentOnly) {
+    next.currentOnly = true;
+    notice = "Grouping shows current findings only.";
+  }
+  const shapeChanged = ["groupByPackage", "groupByArtifact"]
+    .some((name) => name in next && Boolean(next[name]) !== Boolean(page[name]));
+  Object.assign(page, next);
+  if (notice) {
+    Object.entries(SECURITY_SCAN_FINDING_SWITCHES).forEach(([name, id]) => {
+      document.getElementById(id).checked = Boolean(page[name]);
+    });
+    showToast(notice, "ok");
+  }
+  if (shapeChanged) securityScanFindingTreeExpanded.clear();
   hideSecurityScanFindingDetail();
   resetSecurityScanPage("findings");
   await loadSecurityScanList("findings");
@@ -6302,12 +6753,12 @@ async function loadSecurityScanning() {
   keys.forEach((key, index) => {
     const payload = pages[index];
     if (payload.requestVersion !== securityScanPages[key].requestVersion) return;
-    securityScanState[key] = Array.isArray(payload?.items) ? payload.items : [];
     securityScanPages[key].nextAfter = payload?.nextCursor ?? payload?.nextAfter ?? null;
+    setSecurityScanListItems(key, Array.isArray(payload?.items) ? payload.items : []);
   });
   renderSecurityScanning();
   const emptyLaterPages = keys.filter(
-    (key) => securityScanState[key].length === 0 && securityScanPages[key].page > 0);
+    (key) => securityScanListItems(key).length === 0 && securityScanPages[key].page > 0);
   await Promise.all(emptyLaterPages.map((key) => {
     const page = securityScanPages[key];
     page.cursors.pop();
@@ -7037,6 +7488,211 @@ async function createSecurityScanWaiver(event) {
     selectSecurityScanTab("findings");
   } catch (error) {
     showToast(`Waiver creation failed: ${error.message}`, "error");
+  }
+}
+
+// ---- Package waivers ------------------------------------------------------
+// A package waiver selects the exact package URL of one package version within one repository
+// or every repository, and replaces the narrower waivers for that package in the same scope.
+
+// The package of the open dialog, and the server preview for the scope selected in it. The
+// preview is null while a scope loads or after it failed, which blocks submission: a waiver is
+// only ever created for a scope whose preview the operator has seen.
+let securityScanPackageWaiverPackage = null;
+let securityScanPackageWaiverContext = null;
+let securityScanPackageWaiverRequest = 0;
+
+function securityScanPackageWaiverScopeValue(context) {
+  return context.repositoryId == null ? "all" : `repository:${context.repositoryId}`;
+}
+
+function securityScanPackageLabel(context) {
+  return [context.packageName, context.installedVersion].filter(Boolean).join(" @ ");
+}
+
+function securityScanPackageWaiverScopeLabel(context) {
+  if (context.repositoryId == null) return "all repositories";
+  return context.repositories.find((repository) => repository.id === context.repositoryId)?.name
+    || `repository #${context.repositoryId}`;
+}
+
+async function fetchSecurityScanPackageWaiverContext(packageName, installedVersion, scope = "") {
+  const params = new URLSearchParams();
+  params.set("packageName", packageName || "");
+  params.set("installedVersion", installedVersion ?? "");
+  if (scope === "all") params.set("allRepositories", "true");
+  else if (scope.startsWith("repository:")) params.set("repositoryId", scope.slice("repository:".length));
+  const response = await fetch(
+    `/internal/security/scanning/waivers/package-context?${params.toString()}`,
+    { cache: "no-store" });
+  if (!response.ok) throw new Error(await responseErrorMessage(response));
+  return response.json();
+}
+
+function renderSecurityScanPackageWaiverReplaced(waivers) {
+  if (waivers.length === 0) {
+    return '<p class="form-note">No existing waivers for this package in this scope.</p>';
+  }
+  const items = waivers.map((waiver) => {
+    const where = [waiver.repository || "All repositories", waiver.assetPath].filter(Boolean).join(": ");
+    return `<li><span class="state-badge compact ${waiver.active ? "ok" : "warn"}">${waiver.active ? "Active" : "Expired"}</span> <code>#${escapeHtml(waiver.id)}</code> ${escapeHtml(waiver.scopeType || "")} · ${escapeHtml(where)} · ${escapeHtml(waiver.exception || "-")}</li>`;
+  }).join("");
+  return `<p class="form-note"><strong>${waivers.length}</strong> existing ${waivers.length === 1 ? "waiver" : "waivers"} for this package in this scope will be deleted and replaced:</p><ul class="security-scan-package-waiver-list">${items}</ul>`;
+}
+
+function renderSecurityScanPackageWaiverContext(context) {
+  securityScanPackageWaiverContext = context;
+  document.getElementById("security-scan-package-waiver-package").value =
+    securityScanPackageLabel(context);
+  const scope = document.getElementById("security-scan-package-waiver-scope");
+  scope.innerHTML = [
+    ...context.repositories.map((repository) =>
+      `<option value="repository:${escapeHtml(repository.id)}">${escapeHtml(repository.name)}</option>`),
+    ...(context.canWaiveGlobally ? ['<option value="all">All repositories</option>'] : [])
+  ].join("");
+  scope.value = securityScanPackageWaiverScopeValue(context);
+  document.getElementById("security-scan-package-waiver-urls").innerHTML =
+    context.packageUrls.map((url) => `<code>${escapeHtml(url)}</code>`).join("")
+      || '<span class="form-note">No package URL in this scope</span>';
+  document.getElementById("security-scan-package-waiver-url-note").hidden =
+    context.missingPackageUrl !== true;
+  document.getElementById("security-scan-package-waiver-replaced").innerHTML =
+    renderSecurityScanPackageWaiverReplaced(context.replacedWaivers);
+  document.getElementById("security-scan-save-package-waiver-button").disabled =
+    context.packageUrls.length === 0;
+}
+
+async function showSecurityScanPackageWaiverForm(key) {
+  const node = findSecurityScanFindingNode(key);
+  if (node?.groupBy !== "PACKAGE"
+      || !securityScanCanMutate("nexus:security-scanning-waivers:create")) return;
+  document.getElementById("security-scan-package-waiver-form").reset();
+  clearRequiredFieldErrors(securityScanPackageWaiverRequiredFields);
+  const target = {
+    packageName: node.group.packageName,
+    installedVersion: node.group.installedVersion
+  };
+  securityScanPackageWaiverPackage = target;
+  if (!await changeSecurityScanPackageWaiverScope("")) {
+    // A request superseded by a newer one must leave that newer request's target alone.
+    if (securityScanPackageWaiverPackage === target) securityScanPackageWaiverPackage = null;
+    return;
+  }
+  document.getElementById("security-scan-package-waiver-duration").value = "7776000";
+  openFormModal("security-scan-package-waiver-form", "security-scan-package-waiver-reason");
+}
+
+/**
+ * Loads the preview for a scope ("" lets the server pick the default). Returns whether this
+ * request is the latest one and succeeded; a superseded response is discarded.
+ */
+async function changeSecurityScanPackageWaiverScope(scope) {
+  const target = securityScanPackageWaiverPackage;
+  if (!target) return false;
+  const request = ++securityScanPackageWaiverRequest;
+  securityScanPackageWaiverContext = null;
+  document.getElementById("security-scan-save-package-waiver-button").disabled = true;
+  try {
+    const context = await fetchSecurityScanPackageWaiverContext(
+      target.packageName, target.installedVersion, scope);
+    if (request !== securityScanPackageWaiverRequest) return false;
+    renderSecurityScanPackageWaiverContext(context);
+    return true;
+  } catch (error) {
+    if (request === securityScanPackageWaiverRequest) {
+      document.getElementById("security-scan-package-waiver-replaced").innerHTML =
+        '<p class="form-note">This scope could not be loaded. Select another scope, or close and reopen this dialog to retry.</p>';
+      showToast(`Unable to load this scope: ${error.message}`, "error");
+    }
+    return false;
+  }
+}
+
+function hideSecurityScanPackageWaiverForm() {
+  clearRequiredFieldErrors(securityScanPackageWaiverRequiredFields);
+  securityScanPackageWaiverPackage = null;
+  securityScanPackageWaiverContext = null;
+  ++securityScanPackageWaiverRequest;
+  closeFormModal("security-scan-package-waiver-form");
+}
+
+async function createSecurityScanPackageWaiver(event) {
+  event.preventDefault();
+  if (!securityScanCanMutate("nexus:security-scanning-waivers:create")) return;
+  const context = securityScanPackageWaiverContext;
+  if (!context
+      || document.getElementById("security-scan-package-waiver-scope").value
+        !== securityScanPackageWaiverScopeValue(context)) {
+    showToast("The selected scope is still loading. Try again when it has loaded.", "error");
+    return;
+  }
+  if (!validateRequiredFields(
+      securityScanPackageWaiverRequiredFields,
+      { prefix: "Waiver fields missing" })) return;
+  const durationValue = document.getElementById("security-scan-package-waiver-duration").value;
+  const neverExpires = durationValue === "never";
+  const durationSeconds = neverExpires ? null : Number(durationValue);
+  if (!neverExpires && (!Number.isFinite(durationSeconds) || durationSeconds <= 0)) {
+    showToast("Waiver expiration is no longer available.", "error");
+    return;
+  }
+  const replaced = context.replacedWaivers;
+  if (replaced.length > 0 && !securityScanCanMutate("nexus:security-scanning-waivers:delete")) {
+    showToast("Replacing existing waivers requires the waiver delete privilege.", "error");
+    return;
+  }
+  const packageLabel = securityScanPackageLabel(context);
+  const scopeLabel = securityScanPackageWaiverScopeLabel(context);
+  if (replaced.length > 0 && !await window.kkrepoConfirmDelete({
+    title: "Replace individual waivers?",
+    description: `All ${replaced.length} individual ${replaced.length === 1 ? "waiver" : "waivers"} for ${packageLabel} in ${scopeLabel} will be deleted, and one package waiver will be created instead.`,
+    details: [
+      { label: "Package", value: packageLabel },
+      { label: "Scope", value: scopeLabel },
+      { label: "Waivers to delete", value: replaced.map((waiver) => `#${waiver.id}`).join(", ") }
+    ],
+    confirmLabel: "Yes, replace",
+    cancelLabel: "No",
+    warning: "Deleted waivers cannot be restored."
+  })) {
+    hideSecurityScanPackageWaiverForm();
+    showToast("Package waiver cancelled. No waivers were changed.", "ok");
+    return;
+  }
+  const payload = {
+    packageName: context.packageName,
+    installedVersion: context.installedVersion ?? "",
+    repositoryId: context.repositoryId ?? null,
+    reason: document.getElementById("security-scan-package-waiver-reason").value.trim(),
+    expiresAt: neverExpires
+      ? null
+      : new Date(Date.now() + durationSeconds * 1000).toISOString(),
+    replaceWaiverIds: replaced.map((waiver) => waiver.id),
+    packageUrls: context.packageUrls
+  };
+  try {
+    const response = await fetch("/internal/security/scanning/waivers/package", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (response.status === 409) {
+      const message = await responseErrorMessage(response);
+      await changeSecurityScanPackageWaiverScope(securityScanPackageWaiverScopeValue(context));
+      showToast(`${message} The list of waivers to replace was refreshed.`, "error");
+      return;
+    }
+    if (!response.ok) throw new Error(await responseErrorMessage(response));
+    const result = await response.json();
+    const replacedCount = Array.isArray(result?.replaced) ? result.replaced.length : 0;
+    hideSecurityScanPackageWaiverForm();
+    showToast(replacedCount > 0
+      ? `Package waiver created for ${packageLabel}; ${replacedCount} individual ${replacedCount === 1 ? "waiver" : "waivers"} replaced.`
+      : `Package waiver created for ${packageLabel}.`, "ok");
+    await loadSecurityScanning();
+    selectSecurityScanTab("findings");
+  } catch (error) {
+    showToast(`Package waiver failed: ${error.message}`, "error");
   }
 }
 
@@ -8503,6 +9159,12 @@ function canAdmin(permission) {
 
 function canAccessAdminView(view) {
   if (canAdmin("nexus:*")) return view !== "loading";
+  // Staging sessions are owner-scoped, but the admin console only exposes the view to accounts
+  // holding a staging permission; the server still enforces ownership per session.
+  if (view === "staging") {
+    return ["admin", "read", "create"].some((action) => canAdmin(`nexus:staging:${action}`));
+  }
+  if (view === "proxy-settings" || view === "download-offload") return canAdmin("nexus:settings:read");
   if (view === "security-scanning") return canAdmin("nexus:security-scanning:read");
   return view === "content-selectors" && ["read", "create", "update", "delete"]
     .some((action) => canAdmin(`nexus:selectors:${action}`));
@@ -8517,6 +9179,10 @@ function switchView(view, options = {}) {
     return false;
   }
   if (!canAccessAdminView(view)) return false;
+  if (view !== "security-api-keys" && document.getElementById("security-api-keys-view").classList.contains("is-active")) {
+    hideSecurityApiKeyForm();
+    hideSecurityApiKeyResult();
+  }
   if (view !== "security-scanning") ++securityScanState.repositoryEditRequest;
   if (options.updateHash !== false) {
     updateHashForView(view, Boolean(options.replaceHash));
@@ -8543,8 +9209,15 @@ function switchView(view, options = {}) {
   if (view === "content-selectors") window.KkContentSelectors.load();
   if (view === "routing-rules") window.KkRoutingRules.load();
   if (view === "docker-registry") loadDockerOperations();
+  if (view === "staging") window.KkStaging.load();
   if (view === "security-users") loadSecurityUsers();
-  if (view === "security-roles") loadSecurityRoles();
+  if (view === "security-roles") {
+    loadSecurityRoles().then(() => {
+      if (!options.roleId || !document.getElementById("security-roles-view").classList.contains("is-active")) return;
+      const role = securityRoles.find((item) => item.roleId === options.roleId);
+      if (role) showSecurityRoleForm(role, { viewOnly: true });
+    });
+  }
   if (view === "security-privileges") loadSecurityPrivileges();
   if (view === "security-realms") loadSecurityRealms();
   if (view === "security-ldap") loadSecurityLdap();
@@ -8559,6 +9232,8 @@ function switchView(view, options = {}) {
   }
   if (view === "security-audit-log") loadAuditLogs(0);
   if (view === "ui-settings") loadUiSettings();
+  if (view === "proxy-settings") window.KkProxySettings.load();
+  if (view === "download-offload") window.KkDownloadOffload.load();
   if (view === "repository-data-migration") loadRepositoryDataMigrationJobs();
   if (view === "ohpm-import") window.KkOhpmImport.load();
   if (view === "ohpm-login") window.KkOhpmLogin.load();
@@ -8598,9 +9273,11 @@ initializeSideGroups();
   ["security-role-form", hideSecurityRoleForm],
   ["security-privilege-form", hideSecurityPrivilegeForm],
   ["security-api-key-form", hideSecurityApiKeyForm],
+  ["security-api-key-result", hideSecurityApiKeyResult],
   ["security-scan-repository-form", hideSecurityScanRepositoryForm],
   ["security-scan-policy-form", hideSecurityScanPolicyForm],
   ["security-scan-waiver-form", hideSecurityScanWaiverForm],
+  ["security-scan-package-waiver-form", hideSecurityScanPackageWaiverForm],
   ["security-scan-waiver-detail", hideSecurityScanWaiverDetail],
   ["security-scan-finding-detail", hideSecurityScanFindingDetail]
 ].forEach(([formId, handler]) => bindFormModalDismiss(formId, handler));
@@ -8722,6 +9399,11 @@ document.getElementById("blobstore-action-menu").addEventListener("focusout", ()
 document.addEventListener("scroll", () => positionBlobStoreActionMenu(), true);
 window.addEventListener("resize", positionBlobStoreActionMenu);
 
+window.KkProxySettings.bind();
+document.getElementById("repository-outbound-proxy-mode").addEventListener("change",
+    window.KkProxySettings.refreshRepositoryForm);
+document.getElementById("repository-allowed-redirect-hosts").addEventListener("input",
+    window.KkProxySettings.refreshRepositoryForm);
 document.getElementById("create-repository-button").addEventListener("click", showCreateRepositoryForm);
 document.getElementById("cancel-repository-button").addEventListener("click", hideRepositoryForm);
 document.getElementById("save-repository-button").addEventListener("click", saveRepository);
@@ -8908,6 +9590,16 @@ document.getElementById("security-scan-current-findings").addEventListener("chan
   filterCurrentSecurityScanFindings(event.target.checked)
     .catch((error) => showToast(error.message, "error"));
 });
+[
+  ["security-scan-group-package", "groupByPackage"],
+  ["security-scan-group-artifact", "groupByArtifact"],
+  ["security-scan-hide-waived", "hideWaived"]
+].forEach(([id, option]) => {
+  document.getElementById(id).addEventListener("change", (event) => {
+    filterSecurityScanFindings({ [option]: event.target.checked })
+      .catch((error) => showToast(error.message, "error"));
+  });
+});
 
 ["tasks", "runs"].forEach((key) => {
   document.querySelectorAll(`[data-${key}-sort]`).forEach((button) => {
@@ -8949,6 +9641,13 @@ document.getElementById("security-scan-policy-table").addEventListener("click", 
 document.getElementById("security-scan-cancel-waiver-button").addEventListener(
   "click", hideSecurityScanWaiverForm);
 document.getElementById("security-scan-waiver-form").addEventListener("submit", createSecurityScanWaiver);
+document.getElementById("security-scan-package-waiver-form").addEventListener(
+  "submit", createSecurityScanPackageWaiver);
+document.getElementById("security-scan-cancel-package-waiver-button").addEventListener(
+  "click", hideSecurityScanPackageWaiverForm);
+document.getElementById("security-scan-package-waiver-scope").addEventListener("change", (event) => {
+  changeSecurityScanPackageWaiverScope(event.target.value);
+});
 document.getElementById("security-scan-close-waiver-detail-button").addEventListener(
   "click", hideSecurityScanWaiverDetail);
 document.getElementById("security-scan-view-all-waivers-button").addEventListener(
@@ -8962,7 +9661,25 @@ document.getElementById("security-scan-finding-detail-content").addEventListener
   }
 });
 bindRequiredFieldErrors(securityScanWaiverRequiredFields);
+bindRequiredFieldErrors(securityScanPackageWaiverRequiredFields);
 document.getElementById("security-scan-finding-table").addEventListener("click", (event) => {
+  const groupToggle = event.target.closest(".security-scan-finding-group-toggle");
+  if (groupToggle) {
+    toggleSecurityScanFindingNode(groupToggle.dataset.key)
+      .catch((error) => showToast(error.message, "error"));
+    return;
+  }
+  const packageWaiveButton = event.target.closest(".security-scan-finding-group-waive");
+  if (packageWaiveButton) {
+    showSecurityScanPackageWaiverForm(packageWaiveButton.dataset.key);
+    return;
+  }
+  const moreButton = event.target.closest(".security-scan-finding-group-more");
+  if (moreButton) {
+    showMoreSecurityScanFindingNode(moreButton.dataset.key)
+      .catch((error) => showToast(error.message, "error"));
+    return;
+  }
   const viewButton = event.target.closest(".security-scan-finding-view");
   if (viewButton) {
     showSecurityScanFindingDetail(viewButton.dataset.id);
@@ -8995,7 +9712,10 @@ document.getElementById("security-scan-waiver-table").addEventListener("click", 
   if (deleteButton) deleteSecurityScanWaiver(deleteButton.dataset.id);
 });
 
-document.getElementById("security-user-filter").addEventListener("input", renderSecurityUsers);
+document.getElementById("security-user-filter").addEventListener("input", () => {
+  securityUserRoleFilter = "";
+  renderSecurityUsers();
+});
 document.getElementById("security-user-source-filter").addEventListener("change", renderSecurityUsers);
 document.getElementById("create-security-user-button").addEventListener("click", () => showSecurityUserForm());
 document.getElementById("cancel-security-user-button").addEventListener("click", hideSecurityUserForm);
@@ -9006,6 +9726,11 @@ document.getElementById("security-user-form").addEventListener("submit", (event)
 });
 bindRequiredFieldErrors(securityUserRequiredFields);
 document.getElementById("security-user-table").addEventListener("click", (event) => {
+  const roleLink = event.target.closest(".security-role-link");
+  if (roleLink) {
+    switchView("security-roles", { roleId: roleLink.dataset.roleId });
+    return;
+  }
   const editButton = event.target.closest(".edit-security-user-button");
   if (editButton) {
     const user = securityUsers.find((item) => item.source === editButton.dataset.source && item.userId === editButton.dataset.id);
@@ -9020,6 +9745,15 @@ document.getElementById("security-role-filter").addEventListener("input", render
 document.getElementById("create-security-role-button").addEventListener("click", () => showSecurityRoleForm());
 document.getElementById("cancel-security-role-button").addEventListener("click", hideSecurityRoleForm);
 document.getElementById("save-security-role-button").addEventListener("click", saveSecurityRole);
+document.getElementById("add-security-role-mapping").addEventListener("click", () => addSecurityRoleMapping());
+document.getElementById("edit-security-role-mappings").addEventListener("click", editSecurityRoleMappings);
+document.getElementById("view-security-role-users").addEventListener("click", () => {
+  securityUserRoleFilter = document.getElementById("security-role-id").value;
+  document.getElementById("security-user-filter").value = securityUserRoleFilter;
+  document.getElementById("security-user-source-filter").value = "";
+  hideSecurityRoleForm();
+  switchView("security-users");
+});
 document.getElementById("security-role-id").addEventListener("input", () => refreshSecurityTransfer("roleRoles"));
 document.getElementById("security-role-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -9103,6 +9837,7 @@ document.getElementById("ui-default-theme").addEventListener("change", previewUi
 bindRequiredFieldErrors(uiSettingsRequiredFields);
 window.addEventListener("kkrepo:i18n-change", syncUiSettingsForm);
 
+document.getElementById("copy-security-api-key").addEventListener("click", copySecurityApiKey);
 document.getElementById("create-security-api-key-button").addEventListener("click", showSecurityApiKeyForm);
 document.getElementById("cancel-security-api-key-button").addEventListener("click", hideSecurityApiKeyForm);
 document.getElementById("save-security-api-key-button").addEventListener("click", saveSecurityApiKey);
@@ -9162,7 +9897,7 @@ async function bootstrap() {
   if (!canAdmin("nexus:*")) {
     initialDataLoaded = true;
     if (!applyHashRoute()) {
-      const fallback = ["security-scanning", "content-selectors"].find(canAccessAdminView);
+      const fallback = ["security-scanning", "content-selectors", "proxy-settings"].find(canAccessAdminView);
       if (fallback) switchView(fallback, { replaceHash: true });
       else document.getElementById("loading-view").textContent = "No administration views are available.";
     }

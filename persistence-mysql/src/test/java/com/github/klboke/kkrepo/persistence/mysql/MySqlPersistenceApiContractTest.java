@@ -22,6 +22,7 @@ class MySqlPersistenceApiContractTest extends PersistenceApiContract {
       "securityScanningIsIdempotentFencedAndProtectsImmutableDocuments",
       "securityScanningKeepsNewestScannerSnapshotWhenRematchesCompleteOutOfOrder",
       "securityScanningReconcilesWritesThatMissedAnAlreadyAdvancedEventCursor",
+      "securityScanningDefersCapacityWithoutSpendingAttempts",
       "securityScanningRecoversFinalAttemptsAndCleansUnreferencedHistory");
 
   private final Backend backend = new Backend();
@@ -46,6 +47,11 @@ class MySqlPersistenceApiContractTest extends PersistenceApiContract {
   @Override
   protected <T> T inTransaction(Supplier<T> action) {
     return backend.transaction(action);
+  }
+
+  @Override
+  protected <T> T inReadCommittedTransaction(Supplier<T> action) {
+    return backend.readCommittedTransaction(action);
   }
 
   @Override
@@ -88,6 +94,10 @@ class MySqlPersistenceApiContractTest extends PersistenceApiContract {
 
     private <T> T transaction(Supplier<T> action) {
       return inTransaction(action);
+    }
+
+    private <T> T readCommittedTransaction(Supplier<T> action) {
+      return inReadCommittedTransaction(action);
     }
 
     private Set<String> databaseTablesForContract() {

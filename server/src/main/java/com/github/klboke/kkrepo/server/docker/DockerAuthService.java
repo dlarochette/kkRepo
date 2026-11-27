@@ -17,6 +17,7 @@ import com.github.klboke.kkrepo.protocol.docker.DockerErrorCode;
 import com.github.klboke.kkrepo.protocol.docker.DockerPath;
 import com.github.klboke.kkrepo.protocol.docker.DockerProtocolException;
 import com.github.klboke.kkrepo.security.scan.ScannerContract;
+import com.github.klboke.kkrepo.server.security.ApiKeyRotatedEvent;
 import com.github.klboke.kkrepo.server.security.AuthenticatedSubject;
 import com.github.klboke.kkrepo.server.security.SecurityAuthenticationService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -102,16 +104,30 @@ public class DockerAuthService {
     }
     String token = randomToken();
     Instant expiresAt = Instant.now().plusSeconds(tokenTtlSeconds);
+    // Freeze the staging restriction in the bearer itself. The API key may be deleted by a
+    // cancel/rotation before this bearer expires; the bearer must keep targeting the session (or
+    // fail) instead of becoming a live credential of the owner.
+    String stagingSession = authenticated.isEmpty()
+        ? null
+        : authenticationService.stagingSessionOf(subject).orElse(null);
     tokenDao.insert(
         sha256(token),
         authenticated.isEmpty() ? ANONYMOUS_SUBJECT_SOURCE : subject.source(),
         subject.userId(),
         subject.realmId(),
         subject.apiKeyId(),
+        subject.apiKeyGeneration(),
         TokenKind.USER,
         granted.stream().map(Scope::toMap).toList(),
+        stagingSession,
         expiresAt);
     return new TokenView(token, token, tokenTtlSeconds, issuedAt(expiresAt));
+  }
+
+  /** Bearer tokens issued from a key that was reset must not outlive the old secret. */
+  @EventListener
+  public void revokeTokensOf(ApiKeyRotatedEvent event) {
+    tokenDao.deleteByApiKeyId(event.apiKeyId());
   }
 
   @Transactional
@@ -156,6 +172,7 @@ public class DockerAuthService {
         tokenHash,
         SCANNER_SUBJECT_SOURCE,
         "scanner",
+        null,
         null,
         null,
         TokenKind.SECURITY_SCANNER,
@@ -342,8 +359,23 @@ public class DockerAuthService {
           null,
           permissionSubject));
     }
-    return authenticationService.authenticateStoredSubject(
-        row.subjectSource(), row.subjectUserId(), row.subjectRealmId(), row.subjectApiKeyId());
+    Optional<AuthenticatedSubject> restored = authenticationService.authenticateStoredSubject(
+        row.subjectSource(), row.subjectUserId(), row.subjectRealmId(), row.subjectApiKeyId(),
+        row.subjectApiKeyGeneration());
+    if (restored.isEmpty()) {
+      return restored;
+    }
+    AuthenticatedSubject subject = restored.get();
+    if (row.stagingSession() != null) {
+      // The bearer was minted for a staging session: keep that restriction for the whole token
+      // lifetime, independently of the API key that may have been deleted in the meantime.
+      return Optional.of(subject.withStagingSession(row.stagingSession()));
+    }
+    // A bearer issued before the restriction was persisted can still be resolved from the shared
+    // API-key row while it exists; an ordinary (or unresolvable) key stays ordinary.
+    return Optional.of(authenticationService.stagingSessionOf(subject)
+        .map(subject::withStagingSession)
+        .orElseGet(subject::asOrdinaryApiKey));
   }
 
   public String challenge(String realm, String service) {

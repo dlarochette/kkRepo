@@ -40,6 +40,15 @@ import org.springframework.mock.web.MockHttpServletRequest;
 
 class DockerAuthServiceTest {
   @Test
+  void resetOfTheIssuingKeyRevokesItsBearerTokens() {
+    DockerAuthTokenDao tokenDao = mock(DockerAuthTokenDao.class);
+    new DockerAuthService(tokenDao, mock(DockerRegistryDao.class),
+        mock(SecurityAuthenticationService.class), mock(AccessDecisionService.class), 900)
+        .revokeTokensOf(new com.github.klboke.kkrepo.server.security.ApiKeyRotatedEvent(30L));
+    verify(tokenDao).deleteByApiKeyId(30L);
+  }
+
+  @Test
   void pushScopeCanBeGrantedFromEditPermissionForManifestAndTagUpdates() {
     DockerAuthTokenDao tokenDao = mock(DockerAuthTokenDao.class);
     SecurityAuthenticationService authentication = mock(SecurityAuthenticationService.class);
@@ -70,8 +79,10 @@ class DockerAuthServiceTest {
         eq("alice"),
         eq("local"),
         eq(null),
+        eq(null),
         eq(TokenKind.USER),
         scopes.capture(),
+        eq((String) null),
         any(Instant.class));
     assertEquals(List.of(Map.of(
         "repository", "docker-hosted",
@@ -103,8 +114,10 @@ class DockerAuthServiceTest {
         eq("alice"),
         eq("local"),
         eq(null),
+        eq(null),
         eq(TokenKind.USER),
         scopes.capture(),
+        eq((String) null),
         any(Instant.class));
     org.mockito.Mockito.verifyNoInteractions(access);
     assertEquals(List.of(Map.of(
@@ -141,8 +154,8 @@ class DockerAuthServiceTest {
     service.grant(new MockHttpServletRequest("GET", "/service/rest/v1/docker/token"),
         "registry", List.of("registry:catalog:*"));
 
-    verify(tokenDao).insert(any(), eq(DockerAuthService.ANONYMOUS_SUBJECT_SOURCE), eq("anonymous"), eq("local"), eq(null), eq(TokenKind.USER),
-        eq(List.of(Map.of("repository", "", "imageName", "", "actions", List.of("catalog")))), any());
+    verify(tokenDao).insert(any(), eq(DockerAuthService.ANONYMOUS_SUBJECT_SOURCE), eq("anonymous"), eq("local"), eq(null), eq(null), eq(TokenKind.USER),
+        eq(List.of(Map.of("repository", "", "imageName", "", "actions", List.of("catalog")))), eq((String) null), any());
     org.mockito.Mockito.verifyNoInteractions(access);
   }
 
@@ -153,7 +166,7 @@ class DockerAuthServiceTest {
     var subject = new AuthenticatedSubject("Local", "anonymous", "local", null,
         new PermissionSubject("Local", "anonymous", Set.of("single-repo-reader"), null));
     when(tokenDao.findValid(anyString(), any())).thenReturn(Optional.of(new DockerAuthTokenDao.TokenRecord(
-        "hash", DockerAuthService.ANONYMOUS_SUBJECT_SOURCE, "anonymous", "local", null, TokenKind.USER,
+        "hash", DockerAuthService.ANONYMOUS_SUBJECT_SOURCE, "anonymous", "local", null, null, TokenKind.USER,
         Map.of("scopes", List.of()), Instant.now().plusSeconds(60))));
     DockerAuthService service = new DockerAuthService(tokenDao, mock(DockerRegistryDao.class),
         authentication, mock(AccessDecisionService.class), 900);
@@ -168,7 +181,7 @@ class DockerAuthServiceTest {
     when(authentication.authenticateAnonymousFresh()).thenReturn(Optional.of(new AuthenticatedSubject(
         "Local", "anonymous", "other-realm", null, subject.permissionSubject())));
     assertTrue(service.authenticateBearer("anonymous-token").isEmpty());
-    verify(authentication, org.mockito.Mockito.never()).authenticateStoredSubject(any(), any(), any(), any());
+    verify(authentication, org.mockito.Mockito.never()).authenticateStoredSubject(any(), any(), any(), any(), any());
   }
 
   @Test
@@ -198,8 +211,10 @@ class DockerAuthServiceTest {
         eq("alice"),
         eq("local"),
         eq(null),
+        eq(null),
         eq(TokenKind.USER),
         scopes.capture(),
+        eq((String) null),
         any(Instant.class));
     assertEquals(List.of(Map.of(
         "repository", "docker-hosted",
@@ -252,6 +267,7 @@ class DockerAuthServiceTest {
         eq("scanner"),
         eq(null),
         eq(null),
+        eq(null),
         eq(TokenKind.SECURITY_SCANNER),
         scopes.capture(),
         expiry.capture());
@@ -277,6 +293,7 @@ class DockerAuthServiceTest {
         hash.getValue(),
         DockerAuthService.SCANNER_SUBJECT_SOURCE,
         "scanner",
+        null,
         null,
         null,
         TokenKind.SECURITY_SCANNER,
@@ -381,6 +398,7 @@ class DockerAuthServiceTest {
         "alice",
         "realm-1",
         null,
+        null,
         TokenKind.USER,
         Map.of("scopes", List.of(Map.of(
             "repository", "docker-hosted",
@@ -390,7 +408,7 @@ class DockerAuthServiceTest {
     when(tokenDao.findValid(any(String.class), any(Instant.class)))
         .thenReturn(Optional.of(stored));
     when(authentication.authenticateStoredSubject(
-        DockerAuthService.SCANNER_SUBJECT_SOURCE, "alice", "realm-1", null))
+        DockerAuthService.SCANNER_SUBJECT_SOURCE, "alice", "realm-1", null, null))
         .thenReturn(Optional.of(ordinary));
 
     DockerAuthService.BearerAuthentication restored =
@@ -444,6 +462,116 @@ class DockerAuthServiceTest {
         10L,
         Map.of(),
         Map.of());
+  }
+
+  @Test
+  void grantFreezesTheStagingSessionInTheBearer() {
+    DockerAuthTokenDao tokenDao = mock(DockerAuthTokenDao.class);
+    SecurityAuthenticationService authentication = mock(SecurityAuthenticationService.class);
+    AccessDecisionService access = mock(AccessDecisionService.class);
+    PermissionSubject permissions =
+        new PermissionSubject("Local", "alice", Set.of("docker-edit"), null);
+    AuthenticatedSubject staging = new AuthenticatedSubject(
+        "Local", "alice", "local", 9L, permissions, Boolean.TRUE, "7", null);
+    MockHttpServletRequest request =
+        new MockHttpServletRequest("GET", "/service/rest/v1/docker/token");
+    when(authentication.authenticate(request)).thenReturn(Optional.of(staging));
+    when(authentication.stagingSessionOf(staging)).thenReturn(Optional.of("7"));
+    when(access.decide(eq(permissions), any(RepositoryPermission.class)))
+        .thenReturn(AccessDecision.allow());
+    DockerAuthService service = new DockerAuthService(
+        tokenDao, mock(DockerRegistryDao.class), authentication, access, 900);
+
+    service.grant(request, "127.0.0.1:18090",
+        List.of("repository:docker-hosted/team/app:pull,push"));
+
+    verify(tokenDao).insert(
+        any(),
+        eq("Local"),
+        eq("alice"),
+        eq("local"),
+        eq(9L),
+        eq((String) null),
+        eq(TokenKind.USER),
+        any(),
+        eq("7"),
+        any(Instant.class));
+  }
+
+  @Test
+  void aBearerRestrictedToAStagingSessionNeverBecomesLiveAfterTheKeyIsGone() {
+    DockerAuthTokenDao tokenDao = mock(DockerAuthTokenDao.class);
+    SecurityAuthenticationService authentication = mock(SecurityAuthenticationService.class);
+    DockerAuthService service = new DockerAuthService(
+        tokenDao, mock(DockerRegistryDao.class), authentication,
+        mock(AccessDecisionService.class), 900);
+    PermissionSubject permissions = new PermissionSubject("Local", "alice", Set.of("push"), null);
+    // The API key row was deleted by cancel/rotation on another replica: the restored subject no
+    // longer knows its credential class.
+    AuthenticatedSubject restored = new AuthenticatedSubject(
+        "Local", "alice", "local", 9L, permissions);
+    DockerAuthTokenDao.TokenRecord stored = new DockerAuthTokenDao.TokenRecord(
+        "a".repeat(64),
+        "Local",
+        "alice",
+        "local",
+        9L,
+        null,
+        TokenKind.USER,
+        Map.of("scopes", List.of(Map.of(
+            "repository", "docker-hosted",
+            "imageName", "team/app",
+            "actions", List.of("push")))),
+        Instant.now().plusSeconds(600),
+        "7");
+    when(tokenDao.findValid(any(String.class), any(Instant.class)))
+        .thenReturn(Optional.of(stored));
+    when(authentication.authenticateStoredSubject("Local", "alice", "local", 9L, null))
+        .thenReturn(Optional.of(restored));
+    when(authentication.stagingSessionOf(restored)).thenReturn(Optional.empty());
+
+    DockerAuthService.BearerAuthentication authenticationResult = service.authenticateBearer(
+        "token", 5L, "docker-hosted", "team/app", "push", null).orElseThrow();
+
+    // The restriction stored in the bearer survives the API key: the manifest PUT still resolves
+    // to session 7 instead of the live repository.
+    assertTrue(authenticationResult.subject().isStagingToken());
+    assertEquals("7", authenticationResult.subject().stagingSession());
+  }
+
+  @Test
+  void aBearerWithoutAStagingRestrictionStaysAnOrdinaryCredential() {
+    DockerAuthTokenDao tokenDao = mock(DockerAuthTokenDao.class);
+    SecurityAuthenticationService authentication = mock(SecurityAuthenticationService.class);
+    DockerAuthService service = new DockerAuthService(
+        tokenDao, mock(DockerRegistryDao.class), authentication,
+        mock(AccessDecisionService.class), 900);
+    AuthenticatedSubject restored = new AuthenticatedSubject(
+        "Local", "alice", "local", 9L,
+        new PermissionSubject("Local", "alice", Set.of("push"), null));
+    DockerAuthTokenDao.TokenRecord stored = new DockerAuthTokenDao.TokenRecord(
+        "b".repeat(64),
+        "Local",
+        "alice",
+        "local",
+        9L,
+        TokenKind.USER,
+        Map.of("scopes", List.of(Map.of(
+            "repository", "docker-hosted",
+            "imageName", "team/app",
+            "actions", List.of("push")))),
+        Instant.now().plusSeconds(600));
+    when(tokenDao.findValid(any(String.class), any(Instant.class)))
+        .thenReturn(Optional.of(stored));
+    when(authentication.authenticateStoredSubject("Local", "alice", "local", 9L, null))
+        .thenReturn(Optional.of(restored));
+    when(authentication.stagingSessionOf(restored)).thenReturn(Optional.empty());
+
+    DockerAuthService.BearerAuthentication authenticationResult = service.authenticateBearer(
+        "token", 5L, "docker-hosted", "team/app", "push", null).orElseThrow();
+
+    assertFalse(authenticationResult.subject().isStagingToken());
+    assertTrue(authenticationResult.subject().hasStagingClassification());
   }
 
   private static DockerPath manifestPath(String digest) {

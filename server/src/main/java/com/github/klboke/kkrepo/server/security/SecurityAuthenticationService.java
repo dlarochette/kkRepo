@@ -9,8 +9,11 @@ import com.github.klboke.kkrepo.persistence.jdbc.api.model.ApiKeyRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityAnonymousConfigRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityRealmRecord;
 import com.github.klboke.kkrepo.persistence.jdbc.api.model.SecurityUserRecord;
+import com.github.klboke.kkrepo.server.config.RepositoryUrlPrefix;
 import com.github.klboke.kkrepo.server.proxy.ProxiedHttpClientFactory;
 import com.github.klboke.kkrepo.server.proxy.ProxiedHttpClientFactory.ProxiedResponse;
+import com.github.klboke.kkrepo.server.staging.StagingCredentialService;
+import com.github.klboke.kkrepo.server.staging.StagingScopes;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.io.Serializable;
@@ -72,6 +75,8 @@ public class SecurityAuthenticationService {
   private static final String STATUS_ACTIVE = "ACTIVE";
   private static final String STATUS_CHANGE_PASSWORD = "CHANGEPASSWORD";
   private static final String JWKS_CACHE_NAMESPACE = "oidc-jwks";
+  private static final String DOCKER_API_PREFIX = "/v2/";
+  private static final String DOCKER_TOKEN_PATH = "/service/rest/v1/docker/token";
   private static final long OIDC_HTTP_TIMEOUT_MILLIS = 30_000L;
   private static final TypeReference<Map<String, Object>> JSON_MAP = new TypeReference<>() {
   };
@@ -215,12 +220,39 @@ public class SecurityAuthenticationService {
     if (session.isPresent()) {
       return session;
     }
-    if (basicAuthSuppressed(request) && !isBasicLoginRequest(request)) {
+    boolean explicitLogin = isBasicLoginRequest(request);
+    if (basicAuthSuppressed(request) && !explicitLogin) {
       return Optional.empty();
     }
-    return basicCredentials(request).flatMap(credentials ->
-        fresh ? authenticateBasicUncached(credentials.username(), credentials.password())
-            : authenticateBasic(credentials.username(), credentials.password()));
+    return basicCredentials(request).flatMap(credentials -> {
+      // A valid CLI user token is resolved before any realm, so it never reaches an LDAP bind.
+      // Like Nexus user tokens, it serves clients but never opens a UI session.
+      if (!explicitLogin) {
+        Optional<AuthenticatedSubject> token =
+            authenticateUserToken(credentials.username(), credentials.password(), fresh);
+        if (token.isPresent()) {
+          return token;
+        }
+      }
+      return fresh || explicitLogin ? authenticateBasicUncached(credentials.username(), credentials.password())
+          : authenticateBasic(credentials.username(), credentials.password());
+    });
+  }
+
+  private Optional<AuthenticatedSubject> authenticateUserToken(
+      String userCode, String passCode, boolean fresh) {
+    if (!UserTokens.matches(userCode, passCode)) {
+      return Optional.empty();
+    }
+    String material = userCode + ":" + passCode;
+    Supplier<Optional<AuthenticatedSubject>> loader = () -> securityDao
+        .findApiKeyByDomainAndHash(UserTokens.DOMAIN, SecurityHashing.sha256(material))
+        // The database may match other spellings (MySQL utf8mb4_unicode_ci); only the canonical one counts.
+        .filter(token -> UserTokens.DOMAIN.equals(token.domain()))
+        .flatMap(token -> apiKeySubject(token, false, "user-token"));
+    return fresh || apiKeyAuthCache == null
+        ? loader.get()
+        : apiKeyAuthCache.find("user-token:" + material, loader);
   }
 
   private <T> T inAuthenticationTransaction(Supplier<T> callback) {
@@ -334,7 +366,7 @@ public class SecurityAuthenticationService {
     try {
       String decoded = new String(java.util.Base64.getDecoder().decode(token), StandardCharsets.UTF_8);
       int colon = decoded.indexOf(':');
-      if (colon > 0) return authenticateBasic(decoded.substring(0, colon), decoded.substring(colon + 1));
+      if (colon > 0) return basicOrUserToken(decoded.substring(0, colon), decoded.substring(colon + 1));
     } catch (IllegalArgumentException ignored) {
       // GenericToken/API-key URL tokens are not necessarily base64 Basic credentials.
     }
@@ -350,21 +382,30 @@ public class SecurityAuthenticationService {
   public Optional<String> replayableTerraformUrlToken(
       HttpServletRequest request, AuthenticatedSubject authenticated) {
     if (request == null || authenticated == null) return Optional.empty();
-    if (authenticated.apiKeyId() != null) {
-      return boundedTerraformToken(apiKeyToken(request));
+    String apiKeyToken = authenticated.apiKeyId() == null ? null : apiKeyToken(request);
+    if (apiKeyToken != null) {
+      return boundedTerraformToken(apiKeyToken);
     }
     String authorization = request.getHeader("Authorization");
     if (authorization == null || !authorization.regionMatches(true, 0, "Basic ", 0, 6)) {
       return Optional.empty();
     }
+    // A Basic user token replays like a password; apiKeyId must match so only that credential qualifies.
     Optional<AuthenticatedSubject> basic = basicCredentials(request).flatMap(credentials ->
-        authenticateBasic(credentials.username(), credentials.password()));
+        basicOrUserToken(credentials.username(), credentials.password()));
     if (basic.isEmpty()
         || !java.util.Objects.equals(basic.get().source(), authenticated.source())
-        || !java.util.Objects.equals(basic.get().userId(), authenticated.userId())) {
+        || !java.util.Objects.equals(basic.get().userId(), authenticated.userId())
+        || !java.util.Objects.equals(basic.get().apiKeyId(), authenticated.apiKeyId())) {
       return Optional.empty();
     }
     return boundedTerraformToken(authorization.substring(6).trim());
+  }
+
+  /** Basic credentials as the Basic header path resolves them: user token first, then realms. */
+  private Optional<AuthenticatedSubject> basicOrUserToken(String username, String password) {
+    Optional<AuthenticatedSubject> token = authenticateUserToken(username, password, false);
+    return token.isPresent() ? token : authenticateBasic(username, password);
   }
 
   private static Optional<String> boundedTerraformToken(String token) {
@@ -380,18 +421,65 @@ public class SecurityAuthenticationService {
     if (username == null || username.isBlank() || password == null) {
       return Optional.empty();
     }
-    return authenticateBasic(username, password);
+    // Interactive sign-ins must capture current LDAP group membership, even with a warm Basic auth cache.
+    return authenticateBasicUncached(username, password);
   }
 
+  /**
+   * Restores the subject of a stored bearer. A bearer issued from an API key or user token stops
+   * working once that key is revoked, expires or is reset: the shared database must still hold the
+   * secret generation the bearer was issued from, whatever a replica's node-local cache returned.
+   */
   @Transactional(readOnly = true)
   public Optional<AuthenticatedSubject> authenticateStoredSubject(
-      String source, String userId, String realmId, Long apiKeyId) {
+      String source, String userId, String realmId, Long apiKeyId, String apiKeyGeneration) {
     if (source == null || source.isBlank() || userId == null || userId.isBlank()) {
+      return Optional.empty();
+    }
+    // Legacy rows without a generation are rejected; they expire within the bearer TTL anyway.
+    if (apiKeyId != null && (apiKeyGeneration == null || securityDao.findApiKey(apiKeyId)
+        .filter(apiKey -> source.equals(apiKey.ownerSource()) && userId.equals(apiKey.ownerUserId()))
+        .filter(this::activeApiKey)
+        .filter(apiKey -> apiKeyGeneration.equals(apiKeyGeneration(apiKey)))
+        .isEmpty())) {
       return Optional.empty();
     }
     return securityDao.findUser(source, userId)
         .filter(this::activeUser)
-        .map(user -> toSubject(user, realmId, null, apiKeyId));
+        .map(user -> toSubject(user, realmId, storedExternalRoles(user), apiKeyId)
+            .withApiKeyGeneration(apiKeyId == null ? null : apiKeyGeneration));
+  }
+
+  /** Changes exactly when the key's secret is reset; the stored hash itself never leaves this class. */
+  private static String apiKeyGeneration(ApiKeyRecord apiKey) {
+    return apiKey.apiKeyHash() == null ? null : SecurityHashing.sha256("generation:" + apiKey.apiKeyHash());
+  }
+
+  /**
+   * Returns the staging session a credential subject is bound to, if any.
+   *
+   * <p>Used by boundaries that persist a derived credential (Docker bearer tokens) and must freeze
+   * the restriction at issuance. The cached classification is authoritative; a subject written
+   * before that classification existed is resolved once against the shared API-key row.
+   */
+  public Optional<String> stagingSessionOf(AuthenticatedSubject subject) {
+    if (subject == null || subject.apiKeyId() == null) {
+      return Optional.empty();
+    }
+    if (subject.isStagingToken()) {
+      String session = subject.stagingSession();
+      return Optional.of(session == null || session.isBlank()
+          ? StagingCredentialService.INVALID_SESSION : session);
+    }
+    if (subject.hasStagingClassification()) {
+      return Optional.empty();
+    }
+    Optional<ApiKeyRecord> key = securityDao.findApiKey(subject.apiKeyId());
+    if (key.isEmpty() || !StagingScopes.isStagingToken(key.get())) {
+      return Optional.empty();
+    }
+    return Optional.of(StagingScopes.sessionId(key.get()).map(String::valueOf)
+        .orElse(StagingCredentialService.INVALID_SESSION));
   }
 
   public Optional<AuthenticatedSubject> authenticateAnonymous() {
@@ -474,6 +562,10 @@ public class SecurityAuthenticationService {
   }
 
   public void storeSessionSubject(HttpServletRequest request, AuthenticatedSubject subject) {
+    // Sessions do not keep apiKeyId, so a key-backed session would outlive the key's revocation.
+    if (subject.apiKeyId() != null) {
+      throw new IllegalArgumentException("API keys and user tokens cannot open a session");
+    }
     HttpSession session = request.getSession(true);
     session.removeAttribute(BASIC_AUTH_SUPPRESSED_ATTRIBUTE);
     session.setAttribute(FindByIndexNameSessionRepository.PRINCIPAL_NAME_INDEX_NAME, principalName(subject));
@@ -502,10 +594,77 @@ public class SecurityAuthenticationService {
     if (token == null) {
       return Optional.empty();
     }
-    if (fresh || apiKeyAuthCache == null) {
-      return resolveApiKey(ApiKeyTokenCandidate.fromPresentedToken(token));
+    Optional<AuthenticatedSubject> subject = fresh || apiKeyAuthCache == null
+        ? resolveApiKey(ApiKeyTokenCandidate.fromPresentedToken(token))
+        : apiKeyAuthCache.find("header:" + token,
+            () -> resolveApiKey(ApiKeyTokenCandidate.fromPresentedToken(token)));
+    if (subject.isPresent() && subject.get().isStagingToken()) {
+      subject = revalidateStagingCredential(token, subject.get());
     }
-    return apiKeyAuthCache.find(token, () -> resolveApiKey(ApiKeyTokenCandidate.fromPresentedToken(token)));
+    return rejectStagingTokenOutsideRepositoryContent(request, subject);
+  }
+
+  /**
+   * A staging credential is a short-lived capability. Even when the auth cache still holds its
+   * subject, the shared {@code api_key} row is authoritative: a cancel, close or rotation on
+   * another replica deletes that row, and losing it must never widen the cached subject into an
+   * ordinary credential of the same owner.
+   */
+  private Optional<AuthenticatedSubject> revalidateStagingCredential(
+      String presentedToken, AuthenticatedSubject subject) {
+    Optional<ApiKeyRecord> key = subject.apiKeyId() == null
+        ? Optional.empty()
+        : securityDao.findApiKey(subject.apiKeyId());
+    if (key.isEmpty() || !StagingScopes.isStagingToken(key.get())) {
+      if (apiKeyAuthCache != null) {
+        apiKeyAuthCache.evict("header:" + presentedToken);
+      }
+      return Optional.empty();
+    }
+    return Optional.of(classifyApiKey(subject, key.get()));
+  }
+
+  /**
+   * A {@code StagingToken} only authorizes repository content. Its session scope is interpreted by
+   * the staging resolver, never by the management API, so a staging credential must not be able to
+   * create an ordinary API key (or change users, roles, settings, ...) through a management path.
+   *
+   * <p>The credential class is carried by the cached subject ({@link
+   * AuthenticatedSubject#stagingToken()}), so a cache hit keeps the restriction even after the
+   * shared {@code api_key} row has been deleted by a cancel or rotation on another replica. Cached
+   * subjects written before that field existed are classified from the shared row; a subject that
+   * references a missing key fails closed instead of falling back to its owner's ordinary rights.
+   */
+  private Optional<AuthenticatedSubject> rejectStagingTokenOutsideRepositoryContent(
+      HttpServletRequest request, Optional<AuthenticatedSubject> subject) {
+    if (subject.isEmpty() || subject.get().apiKeyId() == null) {
+      return subject;
+    }
+    if (isRepositoryContentPath(request)) {
+      return subject;
+    }
+    if (subject.get().isStagingToken()) {
+      return Optional.empty();
+    }
+    if (subject.get().hasStagingClassification()) {
+      return subject;
+    }
+    // Legacy cache entry: the domain was not stored with the subject, re-read it.
+    Optional<ApiKeyRecord> key = securityDao.findApiKey(subject.get().apiKeyId());
+    if (key.isEmpty() || StagingCredentialService.DOMAIN.equals(key.get().domain())) {
+      return Optional.empty();
+    }
+    return subject.map(AuthenticatedSubject::asOrdinaryApiKey);
+  }
+
+  private static boolean isRepositoryContentPath(HttpServletRequest request) {
+    String path = SecurityRequestPath.matchingPath(request);
+    if (path.startsWith(RepositoryUrlPrefix.path(request))
+        || path.startsWith(DOCKER_API_PREFIX)) {
+      return true;
+    }
+    // Docker clients authenticate once against the token endpoint before pushing content to /v2/.
+    return DOCKER_TOKEN_PATH.equals(path);
   }
 
   private Optional<AuthenticatedSubject> authenticateCargoApiKey(HttpServletRequest request) {
@@ -551,9 +710,13 @@ public class SecurityAuthenticationService {
   }
 
   private Optional<AuthenticatedSubject> resolveApiKey(List<ApiKeyTokenCandidate> candidates, boolean ohpm) {
-    Optional<ApiKeyRecord> match = findApiKey(candidates);
-    if (match.isEmpty()) return Optional.empty();
-    ApiKeyRecord apiKey = match.get();
+    return findApiKey(candidates)
+        // User tokens are Basic credentials only, never bearer or header API keys.
+        .filter(apiKey -> !UserTokens.isUserTokenDomain(apiKey.domain()))
+        .flatMap(apiKey -> apiKeySubject(apiKey, ohpm, "api-key"));
+  }
+
+  private Optional<AuthenticatedSubject> apiKeySubject(ApiKeyRecord apiKey, boolean ohpm, String realmId) {
     if (OhpmLoginTokenPolicy.DOMAIN.equalsIgnoreCase(apiKey.domain())) {
       if (!ohpm || ohpmLoginTokens == null || !ohpmLoginTokens.valid(apiKey)) return Optional.empty();
     } else if (!activeApiKey(apiKey)) return Optional.empty();
@@ -564,7 +727,52 @@ public class SecurityAuthenticationService {
       return Optional.empty();
     }
     securityDao.markApiKeyUsed(apiKey.id(), LocalDateTime.now());
-    return Optional.of(toSubject(owner.get(), "api-key", null, apiKey.id()));
+    return Optional.of(classifyApiKey(
+        toSubject(owner.get(), realmId, storedExternalRoles(owner.get()), apiKey.id())
+            .withApiKeyGeneration(apiKeyGeneration(apiKey)),
+        apiKey));
+  }
+
+  /**
+   * Records the credential class on the subject before it can be cached. A staging token keeps the
+   * session id it is scoped to; an unreadable scope is bound to {@value
+   * StagingCredentialService#INVALID_SESSION} so it fails closed instead of becoming live.
+   */
+  private static AuthenticatedSubject classifyApiKey(
+      AuthenticatedSubject subject, ApiKeyRecord apiKey) {
+    if (!StagingScopes.isStagingToken(apiKey)) {
+      return subject.asOrdinaryApiKey();
+    }
+    return subject.withStagingSession(
+        StagingScopes.sessionId(apiKey).map(String::valueOf)
+            .orElse(StagingCredentialService.INVALID_SESSION));
+  }
+
+  /**
+   * The external group names the OIDC/LDAP realm verified at the user's last sign-in (attributes.groups,
+   * shared by every replica), resolved through that provider's current role mappings and same-name
+   * setting, so API keys and stored bearer tokens follow mapping changes like a browser session.
+   * Raw IdP claims are deliberately ignored. Users who last signed in before the provider was recorded
+   * are resolved through the only enabled provider of their source, if exactly one exists.
+   */
+  private Set<String> storedExternalRoles(SecurityUserRecord user) {
+    if (DEFAULT_SOURCE.equals(user.source()) || user.attributes() == null
+        || !(user.attributes().get("groups") instanceof Collection<?> groups)) {
+      return null;
+    }
+    Set<String> names = new LinkedHashSet<>(ExternalRoleMappings.names(groups));
+    Optional<SecurityRealmRecord> realm;
+    if (user.attributes().get(ExternalRoleMappings.USER_REALM) instanceof String realmId) {
+      realm = externalRealm(realmId, user.source());
+    } else {
+      // LDAP and OIDC may share a source: only an unambiguous provider may judge these names.
+      // Otherwise no external roles apply until the next sign-in records the provider.
+      List<SecurityRealmRecord> candidates = ExternalRoleMappings.REALMS.stream()
+          .flatMap(realmId -> externalRealm(realmId, user.source()).stream())
+          .toList();
+      realm = candidates.size() == 1 ? Optional.of(candidates.get(0)) : Optional.empty();
+    }
+    return realm.map(provider -> ExternalRoleMappings.resolve(provider, names)).orElse(Set.of());
   }
 
   private Optional<ApiKeyRecord> findApiKey(List<ApiKeyTokenCandidate> candidates) {
@@ -602,6 +810,17 @@ public class SecurityAuthenticationService {
       session.removeAttribute(AuthenticatedSubject.SESSION_ATTRIBUTE);
       return Optional.empty();
     }
+    if (subject.realmId() != null && ExternalRoleMappings.REALMS.contains(subject.realmId())) {
+      // Session names are the verified claims. Resolve permissions against the current provider config.
+      return externalRealm(subject.realmId(), subject.source()).map(realm -> {
+        Set<String> names = subject.externalRoleIds() == null ? Set.of() : subject.externalRoleIds();
+        if (subject.rawExternalRoleNames()) {
+          return toExternalSubject(user.get(), realm, names);
+        }
+        Set<String> legacyRoles = ExternalRoleMappings.legacyMatching(realm) ? names : Set.of();
+        return toSubject(user.get(), realm.realmId(), legacyRoles, null);
+      });
+    }
     Set<String> roleIds = new LinkedHashSet<>();
     if (subject.externalRoleIds() != null) {
       roleIds.addAll(subject.externalRoleIds());
@@ -632,6 +851,10 @@ public class SecurityAuthenticationService {
   }
 
   private SessionSubject newSessionSubject(AuthenticatedSubject subject) {
+    if (subject.externalRoleNames() != null) {
+      return new SessionSubject(subject.source(), subject.userId(), subject.realmId(),
+          new LinkedHashSet<>(subject.externalRoleNames()), true);
+    }
     Set<String> externalRoleIds = new LinkedHashSet<>();
     if (subject.permissionSubject() != null && subject.permissionSubject().groupIds() != null) {
       externalRoleIds.addAll(subject.permissionSubject().groupIds());
@@ -642,7 +865,7 @@ public class SecurityAuthenticationService {
     if (defaultAuthenticatedRoleId != null) {
       externalRoleIds.remove(defaultAuthenticatedRoleId);
     }
-    return new SessionSubject(subject.source(), subject.userId(), subject.realmId(), externalRoleIds);
+    return new SessionSubject(subject.source(), subject.userId(), subject.realmId(), externalRoleIds, false);
   }
 
   private String principalName(AuthenticatedSubject subject) {
@@ -653,13 +876,18 @@ public class SecurityAuthenticationService {
       String source,
       String userId,
       String realmId,
-      Set<String> externalRoleIds) implements Serializable {
+      Set<String> externalRoleIds,
+      boolean rawExternalRoleNames) implements Serializable {
+    SessionSubject(String source, String userId, String realmId, Set<String> externalRoleIds) {
+      this(source, userId, realmId, externalRoleIds, false);
+    }
+
     static SessionSubject from(AuthenticatedSubject subject) {
       Set<String> externalRoleIds = Set.of();
       if (subject.permissionSubject() != null && subject.permissionSubject().groupIds() != null) {
         externalRoleIds = new LinkedHashSet<>(subject.permissionSubject().groupIds());
       }
-      return new SessionSubject(subject.source(), subject.userId(), subject.realmId(), externalRoleIds);
+      return new SessionSubject(subject.source(), subject.userId(), subject.realmId(), externalRoleIds, false);
     }
   }
 
@@ -672,15 +900,26 @@ public class SecurityAuthenticationService {
         profile.lastName(),
         profile.email(),
         profile.externalId(),
-        Map.of("claims", profile.claims(), "groups", profile.roles()));
-    return toSubject(user, realm.realmId(), profile.roles(), null);
+        Map.of("claims", profile.claims(), "groups", profile.roles(),
+            ExternalRoleMappings.USER_REALM, realm.realmId()));
+    return toExternalSubject(user, realm, profile.roles());
   }
 
   private Optional<AuthenticatedSubject> authenticateBasic(String username, String password) {
     if (basicAuthCache == null) {
       return authenticateBasicUncached(username, password);
     }
-    return basicAuthCache.find(username, password, () -> authenticateBasicUncached(username, password));
+    return basicAuthCache.find(username, password, () -> authenticateBasicUncached(username, password))
+        .flatMap(subject -> {
+          if (subject.externalRoleNames() == null) {
+            // A cached LDAP subject from before role mapping support has no verified group names.
+            return "ldap".equals(subject.realmId()) ? authenticateBasicUncached(username, password)
+                : Optional.of(subject);
+          }
+          return externalRealm(subject.realmId(), subject.source()).flatMap(realm ->
+              securityDao.findUser(subject.source(), subject.userId()).filter(this::activeUser)
+                  .map(user -> toExternalSubject(user, realm, subject.externalRoleNames())));
+        });
   }
 
   private Optional<AuthenticatedSubject> authenticateBasicUncached(String username, String password) {
@@ -748,8 +987,9 @@ public class SecurityAuthenticationService {
           profile.lastName(),
           profile.email(),
           profile.externalId(),
-          Map.of("dn", profile.dn(), "groups", externalRoles));
-      return Optional.of(toSubject(user, realm.realmId(), externalRoles, null));
+          Map.of("dn", profile.dn(), "groups", externalRoles,
+              ExternalRoleMappings.USER_REALM, realm.realmId()));
+      return Optional.of(toExternalSubject(user, realm, externalRoles));
     } catch (AuthenticationException e) {
       return Optional.empty();
     } catch (NamingException e) {
@@ -1164,7 +1404,18 @@ public class SecurityAuthenticationService {
         user.userId(),
         roleIds,
         apiKeyId == null ? null : String.valueOf(apiKeyId));
-    return new AuthenticatedSubject(user.source(), user.userId(), realmId, apiKeyId, permissionSubject);
+    return new AuthenticatedSubject(
+        user.source(),
+        user.userId(),
+        realmId,
+        apiKeyId,
+        permissionSubject,
+        null,
+        null,
+        // A subject without an API key is provably not a staging credential; one that carries an
+        // id must be classified from the shared row (or from the restored bearer record).
+        apiKeyId == null ? Boolean.FALSE : null,
+        null);
   }
 
   private void addDefaultAuthenticatedRole(Set<String> roleIds) {
@@ -1206,6 +1457,17 @@ public class SecurityAuthenticationService {
     }
     securityDao.updateUser(record);
     return securityDao.findUser(source, userId).orElseThrow();
+  }
+
+  private Optional<SecurityRealmRecord> externalRealm(String realmId, String source) {
+    return securityDao.findRealm(realmId)
+        .filter(realm -> realm.enabled() && sourceForRealm(realm).equals(source));
+  }
+
+  private AuthenticatedSubject toExternalSubject(SecurityUserRecord user,
+      SecurityRealmRecord realm, Set<String> names) {
+    return toSubject(user, realm.realmId(), ExternalRoleMappings.resolve(realm, names), null)
+        .withExternalRoleNames(Set.copyOf(names));
   }
 
   private List<SecurityRealmRecord> activeRealms() {

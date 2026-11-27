@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/fixture-api-keys.sh"
 
 KKREPO_URL="${KKREPO_COMPAT_BASE_URL:-http://127.0.0.1:${KKREPO_COMPAT_PORT:-18090}}"
 SWIFT_KKREPO_URL="${SWIFT_KKREPO_BASE_URL:-$KKREPO_URL}"
@@ -54,6 +55,7 @@ R_E2E_CONTAINERS=()
 R_E2E_ORIGINAL_PROXY_REMOTE=""
 R_E2E_PROXY_PACKAGE=""
 R_E2E_PROXY_MESSAGE=""
+DOCKER_LDAP_CONTAINER=""
 
 if [[ ! "$SWIFT_LOGIN_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   printf '[client-e2e] SWIFT_E2E_LOGIN_TIMEOUT_SECONDS must be a positive integer\n' >&2
@@ -115,13 +117,25 @@ cleanup_r_e2e_containers() {
   done
 }
 
-cleanup_client_e2e_containers() {
+cleanup_docker_ldap_e2e() {
+  if [[ -z "$DOCKER_LDAP_CONTAINER" ]]; then
+    return
+  fi
+  curl -m 20 -sS -o /dev/null -u "$KKREPO_AUTH" -X PUT -H "Content-Type: application/json" \
+    --data '{"enabled":false}' "$KKREPO_URL/internal/security/ldap" >/dev/null 2>&1 || true
+  docker rm -f "$DOCKER_LDAP_CONTAINER" >/dev/null 2>&1 || true
+  DOCKER_LDAP_CONTAINER=""
+}
+
+cleanup_client_e2e() {
+  cleanup_docker_ldap_e2e
   cleanup_apt_e2e_containers
   cleanup_alpine_e2e_containers
   cleanup_r_e2e_containers
+  cleanup_fixture_api_keys || true
 }
 
-trap cleanup_client_e2e_containers EXIT
+trap cleanup_client_e2e EXIT
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -461,17 +475,6 @@ wait_for_docker_registry() {
   return 1
 }
 
-create_api_key() {
-  local domain="$1"
-  local display_name="$2"
-  curl -m 20 -fsS \
-    -u "$KKREPO_AUTH" \
-    -H "Content-Type: application/json" \
-    --data "{\"domain\":\"$domain\",\"displayName\":\"$display_name\"}" \
-    "$KKREPO_URL/internal/security/api-keys/current" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
-}
-
 set_anonymous_access() {
   local enabled="$1"
   curl -m 20 -fsS \
@@ -774,7 +777,7 @@ test_npm() {
   local package="@kkrepo-client-e2e/npm-$STAMP"
   local npm_registry_host token
   npm_registry_host="$(printf '%s' "$KKREPO_URL" | sed 's#^http[s]*://##')"
-  token="$(create_api_key NpmToken "client e2e npm $STAMP")"
+  fixture_api_key token NpmToken "client e2e npm $STAMP"
   add_redaction_value "$token"
   mkdir -p "$dir" "$install_dir" "$pnpm_login_dir"
   : >"$pnpm_user_config"
@@ -969,7 +972,7 @@ test_cargo() {
   local cargo_home="$WORK_DIR/cargo-home"
   local cargo_target="$WORK_DIR/cargo-target"
   local token
-  token="$(create_api_key CargoToken "client e2e cargo $STAMP")"
+  fixture_api_key token CargoToken "client e2e cargo $STAMP"
   add_redaction_value "$token"
   mkdir -p "$crate_dir/src" "$crate_dir/.cargo" "$cargo_home" "$cargo_target"
   cat >"$crate_dir/Cargo.toml" <<EOF
@@ -1040,7 +1043,7 @@ test_pub() {
   local hosted_url="$KKREPO_URL/repository/pub-hosted"
   local group_url="$KKREPO_URL/repository/pub-group"
   local token
-  token="$(create_api_key PubToken "client e2e pub $STAMP")"
+  fixture_api_key token PubToken "client e2e pub $STAMP"
   add_redaction_value "$token"
   mkdir -p "$package_dir/lib" "$consumer_dir/bin" "$pub_cache" "$pub_home/.config"
 
@@ -1352,7 +1355,7 @@ test_nuget() {
   local packages_dir="$WORK_DIR/nuget-packages"
   local package="KkRepo.ClientE2E.NuGet.$STAMP"
   local token
-  token="$(create_api_key NuGetApiKey "client e2e nuget $STAMP")"
+  fixture_api_key token NuGetApiKey "client e2e nuget $STAMP"
   add_redaction_value "$token"
   mkdir -p "$dir" "$restore_dir" "$packages_dir"
   write_nuget_config "$dir/NuGet.Config" "kkrepoHosted" "$KKREPO_URL/repository/nuget-hosted/index.json"
@@ -1400,7 +1403,7 @@ test_rubygems() {
   local gem_user_home="$WORK_DIR/rubygems-home"
   local gem_credentials="$gem_user_home/.gem/credentials"
   local token
-  token="$(create_api_key RubyGemsApiKey "client e2e rubygems $STAMP")"
+  fixture_api_key token RubyGemsApiKey "client e2e rubygems $STAMP"
   add_redaction_value "$token"
   mkdir -p "$dir/lib" "$gem_home" "$gem_user_home/.gem"
   printf -- '---\n:kkrepo: %s\n' "$token" >"$gem_credentials"
@@ -1835,6 +1838,285 @@ test_docker_oci() {
   else
     log "oras not found; Docker image client flow completed, ORAS artifact flow skipped"
   fi
+  test_docker_ldap_mapped_roles
+}
+
+# An LDAP user gets push access only through an explicit group -> role mapping, with same-name
+# matching off. The user is also in an unmapped group whose name equals a local role id: that role
+# must not apply. API keys, the CLI user token and Docker bearers issued before the group removal
+# lose the mapped grant once the next sign-in stores the new groups.
+test_docker_ldap_mapped_roles() {
+  local ldap_image="${DOCKER_LDAP_E2E_IMAGE:-osixia/openldap:1.5.0}"
+  local ldap_port="${DOCKER_LDAP_E2E_PORT:-18389}"
+  local ldap_host="${DOCKER_LDAP_E2E_HOST:-host.docker.internal}"
+  local ldap_admin_password="ldap-admin-$STAMP"
+  # Unique per run: an API key / user token of the same domain is create-only per owner.
+  local user="kk-e2e-ldap-$STAMP"
+  local password="ldap-user-$STAMP"
+  local group="kk-e2e-docker-$STAMP"
+  local legacy_group="kk-e2e-docker-legacy-$STAMP"
+  local role="kk-e2e-docker-role-$STAMP"
+  local ref="$KKREPO_DOCKER_HOSTED_REGISTRY/kkrepo-client-e2e/docker-oci-ldap:$STAMP"
+  local upload_url="http://$KKREPO_DOCKER_HOSTED_REGISTRY/v2/kkrepo-client-e2e/docker-oci-ldap/blobs/uploads/"
+  local docker_config="$WORK_DIR/docker-ldap-config"
+  local sync_timeout="${DOCKER_LDAP_E2E_SYNC_TIMEOUT_SECONDS:-180}"
+  local api_key status docker_env token_id user_code pass_code push_bearer token_basic password_basic
+  # A separate client config keeps the admin login; keep the active engine of the current context.
+  docker_env="DOCKER_CONFIG='$docker_config' DOCKER_HOST='$(docker context inspect --format '{{.Endpoints.docker.Host}}')'"
+  add_redaction_value "$ldap_admin_password"
+  add_redaction_value "$password"
+  mkdir -p "$docker_config"
+
+  DOCKER_LDAP_CONTAINER="kkrepo-client-e2e-ldap-$STAMP"
+  run_logged docker-ldap-start docker run --detach --name "$DOCKER_LDAP_CONTAINER" \
+    -p "$ldap_port:389" -e LDAP_DOMAIN=example.com \
+    -e LDAP_ADMIN_PASSWORD="$ldap_admin_password" "$ldap_image"
+  for ((i = 1; i <= 60; i++)); do
+    if docker exec "$DOCKER_LDAP_CONTAINER" ldapsearch -x -H ldap://localhost \
+      -D cn=admin,dc=example,dc=com -w "$ldap_admin_password" -b dc=example,dc=com -s base \
+      >/dev/null 2>&1; then
+      break
+    fi
+    if (( i == 60 )); then
+      log "timed out waiting for the LDAP fixture"
+      return 1
+    fi
+    sleep 1
+  done
+  docker exec -i "$DOCKER_LDAP_CONTAINER" ldapadd -x -H ldap://localhost \
+    -D cn=admin,dc=example,dc=com -w "$ldap_admin_password" >"$ARTIFACT_DIR/docker-ldap-seed.log" 2>&1 <<LDIF
+dn: ou=people,dc=example,dc=com
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=com
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=$user,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: $user
+cn: Client E2E LDAP
+sn: E2E
+mail: $user@example.com
+userPassword: $password
+
+dn: cn=$group,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: $group
+member: uid=$user,ou=people,dc=example,dc=com
+
+dn: cn=$legacy_group,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: $legacy_group
+member: uid=$user,ou=people,dc=example,dc=com
+LDIF
+
+  # A fresh DB starts explicit, one with pre-mapping LDAP settings starts legacy: always set it.
+  docker_ldap_set_legacy_matching false
+  # The realm must exist before a role can be mapped to it.
+  curl -m 20 -fsS -o /dev/null -u "$KKREPO_AUTH" -H "Content-Type: application/json" \
+    --data "{\"roleId\":\"$role\",\"name\":\"$role\",\"description\":\"client E2E LDAP mapped role\",\"privileges\":[\"nx-repository-view-docker-docker-hosted-*\"],\"roles\":[],\"externalMappings\":[{\"realmId\":\"ldap\",\"externalName\":\"$group\"}]}" \
+    "$KKREPO_URL/internal/security/roles"
+  curl -m 20 -fsS -u "$KKREPO_AUTH" "$KKREPO_URL/internal/security/roles" \
+    | python3 -c 'import json,sys
+role = next(r for r in json.load(sys.stdin) if r["roleId"] == sys.argv[1])
+assert role["externalMappings"] == [{"realmId": "ldap", "externalName": sys.argv[2]}], role["externalMappings"]' \
+    "$role" "$group" || { log "LDAP mapping of role $role was not saved"; return 1; }
+  # Same push rights, but only reachable by same-name matching, which is off.
+  curl -m 20 -fsS -o /dev/null -u "$KKREPO_AUTH" -H "Content-Type: application/json" \
+    --data "{\"id\":\"$legacy_group\",\"name\":\"$legacy_group\",\"description\":\"client E2E unmapped LDAP group\",\"privileges\":[\"nx-repository-view-docker-docker-hosted-*\"],\"roles\":[]}" \
+    "$KKREPO_URL/service/rest/v1/security/roles"
+
+  # The LDAP login persists the groups; no role is assigned to the user in kkRepo itself.
+  api_key="$(curl -m 20 -fsS -u "$user:$password" -H "Content-Type: application/json" \
+    --data '{"displayName":"client E2E LDAP docker"}' \
+    "$KKREPO_URL/internal/security/api-keys/current" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+  add_redaction_value "$api_key"
+
+  run_logged docker-ldap-login bash -lc "printf '%s\n' \"\$1\" | $docker_env docker login '$KKREPO_DOCKER_HOSTED_REGISTRY' --username '$user' --password-stdin" _ "$password"
+  run_logged docker-ldap-push bash -lc "docker tag alpine:3.20 '$ref' && $docker_env docker push '$ref'"
+  run_logged docker-ldap-api-key-push-scope \
+    python3 compat-test/scripts/docker-registry-scope-probe.py \
+    --registry "http://$KKREPO_DOCKER_HOSTED_REGISTRY" --image kkrepo-client-e2e/docker-oci-ldap \
+    --header "X-Nexus-Plus-Token: $api_key" --expect allowed
+
+  # Sets token_id, user_code and pass_code (the pair after its reset check).
+  docker_ldap_user_token_flow
+  push_bearer="$(curl -m 20 -fsS -u "$user_code:$pass_code" \
+    "http://$KKREPO_DOCKER_HOSTED_REGISTRY/service/rest/v1/docker/token?service=$KKREPO_DOCKER_HOSTED_REGISTRY&scope=repository:kkrepo-client-e2e/docker-oci-ldap:pull,push" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("token") or d["access_token"])')"
+  add_redaction_value "$push_bearer"
+  token_basic="Authorization: Basic $(printf '%s:%s' "$user_code" "$pass_code" | base64 | tr -d '\r\n')"
+  password_basic="Authorization: Basic $(printf '%s:%s' "$user" "$password" | base64 | tr -d '\r\n')"
+  add_redaction_value "${token_basic#Authorization: Basic }"
+  add_redaction_value "${password_basic#Authorization: Basic }"
+  docker_ldap_await allowed "mapped group grants push" "X-Nexus-Plus-Token: $api_key" \
+    "$token_basic" "Authorization: Bearer $push_bearer" "$password_basic"
+
+  # Leave only the mapped group; the user stays in the unmapped same-name group.
+  docker exec -i "$DOCKER_LDAP_CONTAINER" ldapmodify -x -H ldap://localhost \
+    -D cn=admin,dc=example,dc=com -w "$ldap_admin_password" >"$ARTIFACT_DIR/docker-ldap-revoke.log" 2>&1 <<LDIF
+dn: cn=$group,ou=groups,dc=example,dc=com
+changetype: modify
+replace: member
+member: cn=admin,dc=example,dc=com
+LDIF
+  # The sign-in stores the new groups at once; registry credentials are re-resolved when the Basic
+  # (kkrepo.cache.basic-auth.ttl-seconds, 120 s) and API key (~60 s) caches expire.
+  docker_ldap_await denied "LDAP group removal synchronized" "X-Nexus-Plus-Token: $api_key" \
+    "$token_basic" "Authorization: Bearer $push_bearer" "$password_basic"
+
+  run_logged docker-ldap-push-after-revoke-tag docker tag alpine:3.20 "$ref-revoked"
+  # The probe above proved the denial; containerd 2.x may hang instead of failing on it, hence timeout.
+  if run_logged docker-ldap-push-after-revoke bash -lc "$docker_env timeout 120 docker push '$ref-revoked'"; then
+    log "push succeeded after the LDAP group was removed"
+    return 1
+  fi
+
+  # The toggle is live: same-name matching grants the unmapped group's role again, and off denies it.
+  docker_ldap_set_legacy_matching true
+  docker_ldap_await allowed "same-name matching on" "X-Nexus-Plus-Token: $api_key"
+  docker_ldap_set_legacy_matching false
+  docker_ldap_await denied "same-name matching off" "X-Nexus-Plus-Token: $api_key"
+
+  curl -m 20 -fsS -o /dev/null -u "$user:$password" -X DELETE \
+    "$KKREPO_URL/internal/security/api-keys/current/$token_id"
+  # Checked at the token endpoint (it answered 200 for this pair above): containerd 2.x hangs instead
+  # of failing when its re-auth for the manifest PUT gets 401.
+  status="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -u "$user_code:$pass_code" \
+    "http://$KKREPO_DOCKER_HOSTED_REGISTRY/service/rest/v1/docker/token?service=$KKREPO_DOCKER_HOSTED_REGISTRY&scope=repository:kkrepo-client-e2e/docker-oci-ldap:pull,push")"
+  if [[ "$status" != 401 ]]; then
+    log "docker token endpoint returned $status for a deleted user token"
+    return 1
+  fi
+  docker image rm "$ref" "$ref-revoked" >/dev/null 2>&1 || true
+  cleanup_docker_ldap_e2e
+}
+
+# PUT the LDAP realm with the given same-name matching flag and check it was stored.
+# Uses the locals of test_docker_ldap_mapped_roles.
+docker_ldap_set_legacy_matching() {
+  curl -m 20 -fsS -o /dev/null -u "$KKREPO_AUTH" -X PUT -H "Content-Type: application/json" \
+    --data "{\"enabled\":true,\"priority\":5,\"source\":\"LDAP\",\"name\":\"LDAP\",\"protocol\":\"ldap\",\"host\":\"$ldap_host\",\"port\":$ldap_port,\"searchBase\":\"dc=example,dc=com\",\"authScheme\":\"simple\",\"authUsername\":\"cn=admin,dc=example,dc=com\",\"authPassword\":\"$ldap_admin_password\",\"userBaseDn\":\"ou=people\",\"userSubtree\":true,\"userObjectClass\":\"inetOrgPerson\",\"userIdAttribute\":\"uid\",\"userRealNameAttribute\":\"cn\",\"userEmailAddressAttribute\":\"mail\",\"ldapGroupsAsRoles\":true,\"groupType\":\"static\",\"groupBaseDn\":\"ou=groups\",\"groupSubtree\":true,\"groupIdAttribute\":\"cn\",\"groupMemberAttribute\":\"member\",\"groupMemberFormat\":\"\${dn}\",\"groupObjectClass\":\"groupOfNames\",\"attributes\":{\"legacyRoleMatching\":$1}}" \
+    "$KKREPO_URL/internal/security/ldap"
+  curl -m 20 -fsS -u "$KKREPO_AUTH" "$KKREPO_URL/internal/security/ldap" \
+    | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["attributes"].get("legacyRoleMatching") is (sys.argv[1] == "true") else 1)' "$1" \
+    || { log "LDAP legacyRoleMatching was not stored as $1"; return 1; }
+}
+
+# Polls until every credential header gets the expected blob upload answer, signing in with the
+# LDAP password each round (always a fresh bind that stores the current groups). Bearer headers go
+# straight to the registry; others are exchanged at the token endpoint by the probe.
+# Uses the locals of test_docker_ldap_mapped_roles.
+docker_ldap_await() {
+  local expect="$1" label="$2" cred result reached i
+  shift 2
+  for ((i = 0; i <= sync_timeout; i += 10)); do
+    status="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -u "$user:$password" \
+      "$KKREPO_URL/internal/security/basic/login")"
+    if [[ "$status" != 2?? && "$status" != 3?? ]]; then
+      log "LDAP sign-in returned HTTP $status"
+      return 1
+    fi
+    reached=true
+    for cred in "$@"; do
+      if [[ "$cred" == "Authorization: Bearer "* ]]; then
+        result="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -X POST -H "$cred" "$upload_url")"
+        case "$result" in 202) result=allowed ;; 401 | 403) result=denied ;; esac
+        [[ "$result" == "$expect" ]] || reached=false
+      elif ! python3 compat-test/scripts/docker-registry-scope-probe.py \
+        --registry "http://$KKREPO_DOCKER_HOSTED_REGISTRY" --image kkrepo-client-e2e/docker-oci-ldap \
+        --header "$cred" --expect "$expect" >/dev/null 2>&1; then
+        reached=false
+      fi
+    done
+    if [[ "$reached" == true ]]; then
+      log "$label: $expect after ${i}s"
+      return 0
+    fi
+    sleep 10
+  done
+  log "$label: not $expect within ${sync_timeout}s"
+  return 1
+}
+
+# CLI user token (userCode:passCode as Basic credentials) for the same external user: full Docker
+# login/push/pull, no UI session, and a reset stops the Docker bearer tokens issued from the old pair.
+# Runs while the user still has push rights; leaves token_id, user_code and pass_code (the reset
+# pair) in the locals of test_docker_ldap_mapped_roles for the group-removal and delete checks.
+docker_ldap_user_token_flow() {
+  local token_json token token_ref status
+  local token_config="$WORK_DIR/docker-user-token-config"
+  local token_env
+  mkdir -p "$token_config"
+  token_env="DOCKER_CONFIG='$token_config' DOCKER_HOST='$(docker context inspect --format '{{.Endpoints.docker.Host}}')'"
+  token_ref="$KKREPO_DOCKER_HOSTED_REGISTRY/kkrepo-client-e2e/docker-oci-ldap:token-$STAMP"
+  token_json="$(curl -m 20 -fsS -u "$user:$password" -H "Content-Type: application/json" \
+    --data '{"domain":"UserToken","displayName":"client E2E docker CLI"}' \
+    "$KKREPO_URL/internal/security/api-keys/current")"
+  token_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["apiKey"]["id"])' "$token_json")"
+  token="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$token_json")"
+  user_code="${token%%:*}"
+  pass_code="${token#*:}"
+  add_redaction_value "$token"
+  add_redaction_value "$pass_code"
+
+  run_logged docker-user-token-login bash -lc "printf '%s\n' \"\$1\" | $token_env docker login '$KKREPO_DOCKER_HOSTED_REGISTRY' --username '$user_code' --password-stdin" _ "$pass_code"
+  run_logged docker-user-token-push bash -lc "docker tag alpine:3.20 '$token_ref' && $token_env docker push '$token_ref'"
+  run_logged docker-user-token-remove-local docker image rm "$token_ref"
+  run_logged docker-user-token-pull bash -lc "$token_env docker pull '$token_ref'"
+
+  status="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -u "$user_code:$pass_code" \
+    "$KKREPO_URL/internal/security/basic/login")"
+  if [[ "$status" != "401" ]]; then
+    log "user token opened a UI session: HTTP $status"
+    return 1
+  fi
+  # Anonymous access may answer the session probe; it must just not be the token owner.
+  if curl -m 20 -sS -H "X-Nexus-Plus-Token: $token" "$KKREPO_URL/internal/security/session" \
+    | python3 -c 'import json,sys
+try:
+    sys.exit(0 if json.load(sys.stdin).get("userId") == sys.argv[1] else 1)
+except ValueError:
+    sys.exit(1)' "$user"; then
+    log "user token was accepted as an API key header"
+    return 1
+  fi
+
+  # Reset keeps the token id but rotates the secret: a bearer issued from the old pair must stop working.
+  local registry_url="http://$KKREPO_DOCKER_HOSTED_REGISTRY" bearer
+  local token_url="$registry_url/service/rest/v1/docker/token?service=$KKREPO_DOCKER_HOSTED_REGISTRY&scope=repository:kkrepo-client-e2e/docker-oci-ldap:pull"
+  local tags_url="$registry_url/v2/kkrepo-client-e2e/docker-oci-ldap/tags/list"
+  bearer="$(curl -m 20 -fsS -u "$user_code:$pass_code" "$token_url" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("token") or d["access_token"])')"
+  add_redaction_value "$bearer"
+  status="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $bearer" "$tags_url")"
+  if [[ "$status" != 200 ]]; then
+    log "bearer issued from the user token did not work before reset: HTTP $status"
+    return 1
+  fi
+  token_json="$(curl -m 20 -fsS -u "$user:$password" -X POST \
+    "$KKREPO_URL/internal/security/api-keys/current/$token_id/reset")"
+  token="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$token_json")"
+  [[ "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["apiKey"]["id"])' "$token_json")" == "$token_id" ]] \
+    || { log "user token reset changed the token id"; return 1; }
+  user_code="${token%%:*}"
+  pass_code="${token#*:}"
+  add_redaction_value "$token"
+  add_redaction_value "$pass_code"
+  status="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $bearer" "$tags_url")"
+  if [[ "$status" != 401 ]]; then
+    log "bearer issued before the user token reset still works: HTTP $status"
+    return 1
+  fi
+  status="$(curl -m 20 -sS -o /dev/null -w '%{http_code}' -u "$user_code:$pass_code" "$token_url")"
+  if [[ "$status" != 200 ]]; then
+    log "reset user token was not accepted by the docker token endpoint: HTTP $status"
+    return 1
+  fi
+  docker image rm "$token_ref" >/dev/null 2>&1 || true
 }
 
 test_terraform() {
@@ -2069,7 +2351,7 @@ swift_registry_token_login() {
   local step="swift-$label-registry-token-login"
   local status=0
   local token
-  token="$(create_api_key GenericToken "Swift client E2E $label $STAMP")"
+  fixture_api_key token GenericToken "Swift client E2E $label $STAMP"
   add_redaction_value "$token"
   prepare_swift_netrc "$home"
   run_logged_in "$step" "$directory" \
@@ -2694,7 +2976,28 @@ for field in ("download_url", "shasums_url", "shasums_signature_url"):
 PY
   )
 
-  token="$(create_api_key GenericToken "client e2e terraform $STAMP")"
+  # A CLI user token is Basic-only; its download URLs replay the pair like a password.
+  local user_token user_token_encoded
+  fixture_api_key user_token UserToken "client e2e terraform $STAMP"
+  add_redaction_value "$user_token"
+  user_token_encoded="$(python3 -c 'import base64, sys, urllib.parse; print(urllib.parse.quote(base64.b64encode(sys.argv[1].encode()).decode(), safe=""))' "$user_token")"
+  add_redaction_value "$user_token_encoded"
+  module_headers="$dir/user-token-module.headers"
+  run_logged terraform-user-token-module-metadata curl -m 20 --fail-with-body -sS -u "$user_token" \
+    -D "$module_headers" -o /dev/null \
+    "$KKREPO_URL/repository/terraform-hosted/v1/modules/kkrepo/client-e2e/aws/$fixture_version/download"
+  module_download_url="$(awk 'BEGIN { IGNORECASE=1 } /^X-Terraform-Get:/ { sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$module_headers")"
+  [[ "$module_download_url" == *"/$user_token_encoded/"* ]]
+  run_logged terraform-user-token-module-followup curl -m 20 --fail-with-body -sS \
+    -o "$dir/user-token-module.zip" "$module_download_url"
+  cmp "$module_zip" "$dir/user-token-module.zip"
+  run_logged_output terraform-user-token-provider-metadata "$dir/user-token-provider.json" \
+    curl -m 20 --fail-with-body -sS -u "$user_token" \
+    "$KKREPO_URL/repository/terraform-hosted/v1/providers/kkrepo/fixture/$fixture_version/download/$fixture_os/$fixture_arch"
+  run_logged terraform-user-token-provider-followup curl -m 20 --fail-with-body -sS -o /dev/null \
+    "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["download_url"])' "$dir/user-token-provider.json")"
+
+  fixture_api_key token GenericToken "client e2e terraform $STAMP"
   add_redaction_value "$token"
   config="$dir/terraform.rc"
   cat >"$config" <<EOF
@@ -2904,7 +3207,7 @@ PY
     return 1
   fi
 
-  generic_token="$(create_api_key GenericToken "client e2e ansible $label $STAMP")"
+  fixture_api_key generic_token GenericToken "client e2e ansible $label $STAMP"
   add_redaction_value "$generic_token"
   requirements="$dir/requirements.yml"
   cat >"$requirements" <<EOF
@@ -4244,6 +4547,7 @@ run_selected_tests() {
         exit 2
         ;;
     esac
+    cleanup_fixture_api_keys
     run_registered_cleanup
     # Includes Cleanup Try Run/Execute: these are coverage, not housekeeping.
     printf '%s\t%s\n' "$test" "$((SECONDS - test_started))" >> "$ARTIFACT_DIR/protocol-durations.tsv"
